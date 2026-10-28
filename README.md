@@ -62,10 +62,10 @@
 ```bash
 # 方式一：从 Release 下载 zip 解压
 # 方式二：从源码安装
-pnpm add file:D:/dsh/work/nx/plugin/dsh-nx
+pnpm add file:<解压目录>/dsh-nx
 ```
 
-**前提**：本地已安装 Siemens NX（默认路径 `D:\software\NX`，可用 `nxHome` 或 `UGII_BASE_DIR` 环境变量覆盖）。FE 工具额外需要 `simulation` / `nastran` 许可证。
+**前提**：本地已安装 Siemens NX。安装路径由 `nxHome` 配置项或 `UGII_BASE_DIR` 环境变量指定；两者都不给时自动探测常见安装位置中带 `NXBIN\run_journal.exe` 的目录。FE 工具额外需要 `simulation` / `nastran` 许可证。
 
 ### 2.2 命令行工具
 
@@ -111,8 +111,8 @@ nx_python          # 执行 NXOpen Python 代码
 | 配置键 | 默认值 | 说明 |
 |---|---|---|
 | `panel` | `true` | 设为 `false` 跳过侧栏面板路由 |
-| `outputDir` | `D:\dsh\work\nx\out` | 产物收集目录 |
-| `nxHome` | `D:\software\NX` | NX 安装路径 |
+| `outputDir` | `~/.dsh-nx/out` | 产物收集目录（也可用 `DSH_NX_OUT` 环境变量指定）|
+| `nxHome` | 自动探测 | NX 安装路径（也可用 `UGII_BASE_DIR` 环境变量指定）|
 
 ### 2.5 快速上手示例
 
