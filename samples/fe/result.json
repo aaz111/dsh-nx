@@ -1,0 +1,113 @@
+{
+  "mesh": {
+    "nodes": 8686,
+    "elements": 6731,
+    "elementSize": 3.0,
+    "grid": [
+      40,
+      27,
+      7
+    ],
+    "spacing": [
+      3.0,
+      2.962963,
+      2.857143
+    ],
+    "fixedNodes": 224,
+    "loadedNodes": 8686,
+    "loads": [
+      {
+        "load": "gravity",
+        "value": 9810.0,
+        "g": 9810.0,
+        "direction": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "totalForce": 13.164
+      },
+      {
+        "load": "pressure",
+        "face": "+z",
+        "value": 0.5,
+        "area": 7671.11,
+        "quads": 863,
+        "totalForce": 3835.56
+      },
+      {
+        "load": "moment",
+        "face": "+x",
+        "value": 10000.0,
+        "axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "arm": 11.429,
+        "coupleForce": 875.0
+      }
+    ],
+    "resultant": [
+      0.0,
+      0.0,
+      -3848.72
+    ],
+    "deckLines": 31070,
+    "drape": {
+      "draped": true,
+      "skinNodes": 3752,
+      "moved": 904,
+      "volumeBefore": 170946.032,
+      "volumeAfter": 171597.223,
+      "relaxRounds": 1,
+      "volumeTarget": 173212.338,
+      "errorBefore": -1.31,
+      "errorAfter": -0.93,
+      "invertedElements": 0,
+      "mode": "draped"
+    }
+  },
+  "solver": {
+    "exe": "D:\\software\\NX\\NXNASTRAN\\bin\\nastran.exe",
+    "seconds": 17.3,
+    "returncode": 1,
+    "f06": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\solid_job.f06"
+  },
+  "files": {
+    "bdf": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\solid_job.bdf",
+    "f06": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\solid_job.f06",
+    "stl": {
+      "faces": 3762,
+      "triangles": 7524,
+      "scale": 203.271
+    },
+    "plots": [
+      {
+        "field": "deflection",
+        "path": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\contour_deflection.png",
+        "min": 0.0,
+        "max": 0.1063
+      },
+      {
+        "field": "vonmises",
+        "path": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\contour_vonmises.png",
+        "min": 0.9472,
+        "max": 79.4427
+      }
+    ]
+  },
+  "results": {
+    "maxDisplacement": 0.106262,
+    "loadedFaceDisplacement": 0.106262,
+    "maxVonMises": 79.622,
+    "nodesWithResult": 8686,
+    "elementsWithStress": 6213,
+    "deformationScale": 203.271,
+    "reaction": null,
+    "contours": {
+      "deflection": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\contour_deflection.png",
+      "vonmises": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\contour_vonmises.png"
+    }
+  }
+}
