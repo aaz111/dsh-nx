@@ -3,7 +3,7 @@
 
 Started once by the plugin (or by hand) as
 
-    D:\\software\\NX\\NXBIN\\run_journal.exe nxworker.py
+    <NX install>\\NXBIN\\run_journal.exe nxworker.py
 
 with NXBRIDGE_ROOT pointing at a directory holding ``req/`` and ``resp/``.
 The loop waits for ``req/<id>.json`` ({"id","cmd","args"}) and answers with
@@ -18,6 +18,7 @@ import json
 import math
 import time
 import glob
+import shutil
 import subprocess
 import traceback
 
@@ -3789,17 +3790,52 @@ def main():
 
 # ------------------------------------------------------------- FE / NX Nastran
     CAE_TIMEOUT = float(os.environ.get("NXC_CAE_TIMEOUT") or 900)
-    OUT_DIR = os.environ.get("NXBRIDGE_OUT") or r"D:\dsh\work\nx\out"
+    OUT_DIR = os.environ.get("NXBRIDGE_OUT") or os.path.join(os.path.expanduser("~"), ".dsh-nx", "out")
+
+    _cae_python_cache = []
+
+    def _has_pillow(exe):
+        try:
+            probe = subprocess.run([exe, "-c", "import PIL, sys; sys.stdout.write(PIL.__version__)"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=30)
+            return probe.returncode == 0
+        except Exception:
+            return False
 
     def cae_python():
-        """The bundled runtime carries Pillow; NX's own python usually does not."""
-        candidates = [os.environ.get("NXC_CAE_PYTHON") or "",
-                      r"C:\Users\a1053\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe",
-                      r"C:\Python314\python.exe"]
-        for candidate in candidates:
-            if candidate and os.path.exists(candidate):
+        """A python that can draw the contour plots: NX's own usually has no Pillow.
+
+        Probed rather than hard-coded, so the plugin works on any machine: an
+        explicit NXC_CAE_PYTHON wins, then DSH's bundled runtimes, then whatever
+        ``python`` is on PATH. The first interpreter that can import PIL is used;
+        if none can, the first one that merely exists is returned so the failure
+        surfaces from the plot step with its own message.
+        """
+        if _cae_python_cache:
+            return _cae_python_cache[0]
+        candidates = [os.environ.get("NXC_CAE_PYTHON") or ""]
+        runtime_pattern = os.path.join(os.path.expanduser("~"), ".dsh", "dsh-runtimes", "*",
+                                       "dependencies", "python", "python.exe")
+        try:
+            candidates.extend(sorted(glob.glob(runtime_pattern)))
+        except Exception:
+            pass
+        for name in ("python", "python3"):
+            try:
+                found = shutil.which(name)
+            except Exception:
+                found = None
+            if found:
+                candidates.append(found)
+        candidates.append(sys.executable)
+        existing = [c for c in candidates if c and os.path.exists(c)]
+        for candidate in existing:
+            if _has_pillow(candidate):
+                _cae_python_cache.append(candidate)
                 return candidate
-        return sys.executable
+        chosen = existing[0] if existing else sys.executable
+        _cae_python_cache.append(chosen)
+        return chosen
 
     def cae_script():
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "cae_run.py")

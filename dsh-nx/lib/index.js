@@ -9,24 +9,31 @@
  * The optional sidebar panel (`client.js`) reads the same bridge through two
  * HTTP routes registered here, so looking at NX state never costs a tool call.
  */
+import os from 'node:os';
+import path from 'node:path';
 import { NxBridge } from './bridge.js';
 import { createNxTools } from './tools.js';
 import { GUIDE } from './prompt.js';
 import { registerPanelRoutes } from './panel.js';
 
+/** Artefact folder when the host configures none: a private place under the home directory. */
+function resolveOutputDir(config) {
+    return config.outputDir ?? process.env.DSH_NX_OUT ?? path.join(os.homedir(), '.dsh-nx', 'out');
+}
+
 export const name = 'dsh-nx';
 export const inject = ['tools'];
 
 export function apply(ctx, config = {}) {
+    const outputDir = resolveOutputDir(config);
     const bridge = new NxBridge({
         root: config.root,
         nxHome: config.nxHome,
         worker: config.worker,
+        outputDir,
         startTimeoutMs: config.startTimeoutMs ?? 300_000,
         requestTimeoutMs: config.requestTimeoutMs ?? 240_000,
     });
-
-    const outputDir = config.outputDir ?? 'D:\\\\dsh\\\\work\\\\nx\\\\out';
 
     const disposers = createNxTools(bridge).map((tool) => ctx.tools.register(tool));
     ctx.effect(() => () => {

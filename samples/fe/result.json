@@ -69,14 +69,14 @@
     }
   },
   "solver": {
-    "exe": "D:\\software\\NX\\NXNASTRAN\\bin\\nastran.exe",
+    "exe": "<NX_HOME>\\NXNASTRAN\\bin\\nastran.exe",
     "seconds": 17.3,
     "returncode": 1,
-    "f06": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\solid_job.f06"
+    "f06": "solid_job.f06"
   },
   "files": {
-    "bdf": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\solid_job.bdf",
-    "f06": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\solid_job.f06",
+    "bdf": "solid_job.bdf",
+    "f06": "solid_job.f06",
     "stl": {
       "faces": 3762,
       "triangles": 7524,
@@ -85,13 +85,13 @@
     "plots": [
       {
         "field": "deflection",
-        "path": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\contour_deflection.png",
+        "path": "contour_deflection.png",
         "min": 0.0,
         "max": 0.1063
       },
       {
         "field": "vonmises",
-        "path": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\contour_vonmises.png",
+        "path": "contour_vonmises.png",
         "min": 0.9472,
         "max": 79.4427
       }
@@ -106,8 +106,8 @@
     "deformationScale": 203.271,
     "reaction": null,
     "contours": {
-      "deflection": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\contour_deflection.png",
-      "vonmises": "D:\\dsh\\work\\nx\\out\\p2\\fe\\drape3\\contour_vonmises.png"
+      "deflection": "contour_deflection.png",
+      "vonmises": "contour_vonmises.png"
     }
   }
 }

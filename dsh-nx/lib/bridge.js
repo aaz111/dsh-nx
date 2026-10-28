@@ -29,10 +29,57 @@ async function killTree(pid) {
     });
 }
 
+/** Places NX gets installed: the Siemens folders first, then the usual app drives. */
+const NX_INSTALL_ROOTS = [
+    'C:\\Program Files\\Siemens',
+    'C:\\Program Files\\Siemens PLM Software',
+    'C:\\Program Files (x86)\\Siemens',
+    'C:\\Siemens',
+    'C:\\software',
+    'C:\\apps',
+    'D:\\Program Files\\Siemens',
+    'D:\\Program Files\\Siemens PLM Software',
+    'D:\\Siemens',
+    'D:\\software',
+    'D:\\apps',
+];
+
+/** Does `dir` look like an NX install root, i.e. does it hold NXBIN\run_journal.exe? */
+function isNxHome(dir) {
+    try {
+        return fs.existsSync(path.join(dir, 'NXBIN', 'run_journal.exe'));
+    }
+    catch {
+        // an unreadable drive is simply not an install
+        return false;
+    }
+}
+
+/** NX install root: the explicit option or UGII_BASE_DIR wins, else probe the standard places. */
+function findNxHome() {
+    if (process.env.UGII_BASE_DIR)
+        return process.env.UGII_BASE_DIR;
+    const candidates = [];
+    for (const base of NX_INSTALL_ROOTS) {
+        candidates.push(base);
+        try {
+            for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+                if (entry.isDirectory())
+                    candidates.push(path.join(base, entry.name));
+            }
+        }
+        catch {
+            // not installed there
+        }
+    }
+    return candidates.find(isNxHome) ?? 'C:\\Program Files\\Siemens\\NX';
+}
+
 export class NxBridge {
     constructor(config = {}) {
         this.root = config.root ?? path.join(os.homedir(), '.dsh-nx', 'bridge');
-        this.nxHome = config.nxHome ?? process.env.UGII_BASE_DIR ?? 'D:\\software\\NX';
+        this.nxHome = config.nxHome ?? findNxHome();
+        this.outputDir = config.outputDir ?? path.join(os.homedir(), '.dsh-nx', 'out');
         this.worker = config.worker ?? DEFAULT_WORKER;
         this.startTimeoutMs = config.startTimeoutMs ?? 240_000;
         this.requestTimeoutMs = config.requestTimeoutMs ?? 180_000;
@@ -108,7 +155,7 @@ export class NxBridge {
 
         const child = spawn(this.runJournal, [this.worker], {
             cwd: path.dirname(this.worker),
-            env: { ...process.env, NXBRIDGE_ROOT: this.root },
+            env: { ...process.env, NXBRIDGE_ROOT: this.root, NXBRIDGE_OUT: this.outputDir },
             windowsHide: true,
             stdio: 'ignore',
             // NX takes ~25 s to start and keeps a modelling session in memory:
