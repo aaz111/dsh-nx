@@ -62,13 +62,14 @@
 | 真正共形网格 | 需 Simcenter 网格器 | 用 `draped` 网格（体积误差 −0.9%，孔壁仍为体素形状） |
 | Nastran 默认内存 14 GB | 桌面机不足 | 已改用 `mem=2000mb` |
 
-截图展示：
-<img width="452" height="316" alt="image" src="https://github.com/user-attachments/assets/655cc60f-f310-4f09-995a-663c939b5310" />
+### 截图展示：
+
+<img width="452" height="316" alt="image" src="https://github.com/user-attachments/assets/655cc60f-f310-4f09-995a-663c939b5310" /><img width="299" height="267" alt="image" src="https://github.com/user-attachments/assets/129b7654-8a0a-4c68-9a7b-c475eff26a83" />
 <img width="671" height="363" alt="image" src="https://github.com/user-attachments/assets/4566a7c7-e2eb-4d96-bbcc-a4b77a86bb26" />
 
 
 <img width="288" height="302" alt="image" src="https://github.com/user-attachments/assets/6c36851b-db2b-464f-803e-d946a3fd3153" />
-<img width="299" height="267" alt="image" src="https://github.com/user-attachments/assets/129b7654-8a0a-4c68-9a7b-c475eff26a83" />
+
 
 
 
