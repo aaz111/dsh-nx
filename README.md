@@ -3,7 +3,7 @@
 
 **Siemens NX 插件 · DeepSeek Harness 侧栏工作台**
 
-在后台 NX 会话中完成三维建模、工程图纸（制图类功能慎用，目前仍不能正确输出合格图纸）、格式导出、运动仿真（未经多次验证）、装配管理与有限元分析，全部通过工具调用或侧栏面板驱动，无需手动操作 NX 图形界面。
+在后台 NX 会话中完成三维建模、工程图纸（制图类功能慎用，目前仍不能正确输出合格图纸）、格式导出、装配管理与有限元分析，全部通过工具调用或侧栏面板驱动，无需手动操作 NX 图形界面。
 甚至可以用许愿式的要求建模，但是ai生成不保证完全准确，生成结果需人工复核。
 
 ---
@@ -12,31 +12,31 @@
 
 ### ✅ 能做什么
 
-| 类别 | 工具 | 说明 |
+| 类别/可用程度 | 工具 | 说明 | 
 |---|---|---|
-| **会话管理** | `nx_status` `nx_session` `nx_open` `nx_new` `nx_info` `nx_save` | 查看/启动/重启 NX 会话，打开 .prt/.step/.iges，新建零件，查看信息，保存 |
-| **测量** | `nx_measure` `nx_faces` | 体积、面积、质量、包围盒、质心；面列表（面积 + 中心点） |
-| **实体建模** | `nx_primitive` `nx_extrude` `nx_revolve` `nx_polygon` | 长方体/圆柱/圆锥/球体，拉伸轮廓，旋转轮廓 |
-| **曲线曲面** | `nx_curve` `nx_surface` | 直线/圆弧/圆/样条曲线；通过截面放样、网格曲面、拉伸曲面 |
-| **基准与草图** | `nx_datum` `nx_sketch` | 基准平面/轴/点；矩形/圆/直线/多段线草图（自动约束），可直接拉伸/切除 |
-| **布尔与细化** | `nx_boolean` `nx_fillet` `nx_chamfer` `nx_hole` `nx_thread` `nx_shell` | 合并/切除/相交，圆角，倒角，真实 NX 孔特征，内螺纹（符号+详细），抽壳 |
-| **变换与阵列** | `nx_transform` `nx_pattern` `nx_expression` | 移动/旋转/镜像，线性/环形阵列，读写参数表达式 |
-| **工程图纸** | `nx_drawing` `nx_pdf` `nx_annotate` | （能用，但不建议用，只能帮你出三视图但是作为人类不一定能看懂）自动投影视图 + 图纸，导出 PDF，自动标注（已有 PMI） |
-| **制图补充** | `nx_section_view` `nx_detail_view` `nx_note` | 剖视图（指定剖切线），局部放大图（圆形区域 + 比例），文字注释（自动选中文字体） |
-| **BOM 与批量出图** | `nx_bom_table` `nx_batch_drawings` | 在图纸上画明细表（自绘表格线 + 每格注释），逐件 A3 图纸 + PDF |
-| **格式导出** | `nx_export` | STEP / IGES / STL（等待 NX 异步翻译器完成） |
-| **装配** | `nx_assembly_add/move/fix/mate/list/gap` | 插入组件、定位、约束、最小间隙检查 |
-| **组件操作** | `nx_component_pattern` `nx_component_op` `nx_explode` | 组件阵列、替换/抑制/删除、爆炸图（真实位移，可还原） |
-| **装配清单** | `nx_assembly_bom` `nx_assembly_clearance` | 按零件号汇总 BOM（数量/体积/质量，可导 CSV），逐对间隙矩阵（标记干涉） |
-| **图层与引用集** | `nx_layers` `nx_refset` | 图层状态管理，移动实体到图层；引用集列表/创建/删除 |
-| **有限元** | `nx_fea_spec` `nx_fea_solve` `nx_fea_solid` | NX Nastran 悬臂梁快速校核（SOL 101）；真实几何 FE（体素/铺面网格，力/压力/力矩/重力/离心，静力/模态，挠度 + Von Mises 云图） |
-| **曲面闭环** | `nx_surface_sew` `nx_thicken` `nx_surface_trim_extend` `nx_surface_nside` | 曲面缝合、加厚成实体、修剪延伸、N 边补面 |
-| **同步建模** | `nx_sync_face` `nx_sync_region` | 无草图改面：平移 / 偏置 / 拉出 / 改圆柱直径；删面并自动愈合 |
-| **制图标注** | `nx_gdt` `nx_balloon` `nx_surface_finish` `nx_centerline` | 形位公差框、序号气球、表面粗糙度、中心标记 |
-| **图框与标题栏** | `nx_drawing_frame` | 在图纸上画真实 GB 图框 + 标题栏（含中文），会随 PDF 打印 |
-| **孔型与管路** | `nx_hole`（`type`）、`nx_tube` | 沉头孔 / 锥沉头孔；沿路径生成实心或空心管道 |
-| **筋 / 特征阵列 / 坐标系** | `nx_rib` `nx_pattern_feature` `nx_csys` | 轮廓筋、线性特征阵列、基准坐标系 |
-| **运动仿真** | `nx_motion_open` `nx_motion_status` `nx_motion_solve` `nx_motion_frames` `nx_motion_report` | 打开 .sim，列构件 / 运动副 / 自由度，求解，逐帧采样位姿，出报告图与 GIF |
+| **会话管理 100%** | `nx_status` `nx_session` `nx_open` `nx_new` `nx_info` `nx_save` | 查看/启动/重启 NX 会话，打开 .prt/.step/.iges，新建零件，查看信息，保存 |
+| **测量 100%** | `nx_measure` `nx_faces` | 体积、面积、质量、包围盒、质心；面列表（面积 + 中心点 100%可用 |
+| **实体建模 100%** | `nx_primitive` `nx_extrude` `nx_revolve` `nx_polygon` | 长方体/圆柱/圆锥/球体，拉伸轮廓，旋转轮廓 |
+|**曲线与曲面(未直接验证，但模型输出正确)**| `nx_curve` `nx_surface` | 直线/圆弧/圆/样条曲线；通过截面放样、网格曲面、拉伸曲面 |
+| **基准与草图(未直接验证，但模型输出正确)** | `nx_datum` `nx_sketch` | 基准平面/轴/点；矩形/圆/直线/多段线草图（自动约束），可直接拉伸/切除。|
+| **布尔与细化 100%** | `nx_boolean` `nx_fillet` `nx_chamfer` `nx_hole` `nx_thread` `nx_shell` | 合并/切除/相交，圆角，倒角，真实 NX 孔特征，内螺纹（符号+详细），抽壳 |
+| **变换与阵列 90%** | `nx_transform` `nx_pattern` `nx_expression` | 移动/旋转/镜像，线性/环形阵列，读写参数表达式 |
+| **工程图纸 40%** | `nx_drawing` `nx_pdf` `nx_annotate` | （能用，但不建议用，只能帮你出三视图但是作为人类不一定能看懂）自动投影视图 + 图纸，导出 PDF，自动标注（已有 PMI） |
+| **制图补充 30%** | `nx_section_view` `nx_detail_view` `nx_note` | 剖视图（指定剖切线），局部放大图（圆形区域 + 比例），文字注释（自动选中文字体） |
+| **BOM 与批量出图  60%** | `nx_bom_table` `nx_batch_drawings` | 在图纸上画明细表（自绘表格线 + 每格注释），逐件 A3 图纸 + PDF | 
+| **格式导出 100%** | `nx_export` | STEP / IGES / STL（等待 NX 异步翻译器完成） |
+| **装配 80%** | `nx_assembly_add/move/fix/mate/list/gap` | 插入组件、定位、约束、最小间隙检查 |
+| **组件操作 70%** | `nx_component_pattern` `nx_component_op` `nx_explode` | 组件阵列、替换/抑制/删除、爆炸图（真实位移，可还原） |
+| **装配清单 70%** | `nx_assembly_bom` `nx_assembly_clearance` | 按零件号汇总 BOM（数量/体积/质量，可导 CSV），逐对间隙矩阵（标记干涉） |
+| **图层与引用集（ 未直接验证）** | `nx_layers` `nx_refset` | 图层状态管理，移动实体到图层；引用集列表/创建/删除 |
+| **有限元 90%** | `nx_fea_spec` `nx_fea_solve` `nx_fea_solid` | NX Nastran 悬臂梁快速校核（SOL 101）；真实几何 FE（体素/铺面网格，力/压力/力矩/重力/离心，静力/模态，挠度 + Von Mises 云图） |
+| **曲面闭环 90 %** | `nx_surface_sew` `nx_thicken` `nx_surface_trim_extend` `nx_surface_nside` | 曲面缝合、加厚成实体、修剪延伸、N 边补面 |
+| **同步建模 90%** | `nx_sync_face` `nx_sync_region` | 无草图改面：平移 / 偏置 / 拉出 / 改圆柱直径；删面并自动愈合 |
+| **制图标注 30%** | `nx_gdt` `nx_balloon` `nx_surface_finish` `nx_centerline` | 形位公差框、序号气球、表面粗糙度、中心标记 |
+| **图框与标题栏 70%** | `nx_drawing_frame` | 在图纸上画真实 GB 图框 + 标题栏（含中文），会随 PDF 打印 |
+| **孔型与管路 100%** | `nx_hole`（`type`）、`nx_tube` | 沉头孔 / 锥沉头孔；沿路径生成实心或空心管道 |
+| **筋 / 特征阵列 / 坐标系（未完全验证，但模型输出正确）** | `nx_rib` `nx_pattern_feature` `nx_csys` | 轮廓筋、线性特征阵列、基准坐标系 |
+| **运动仿真 20%** | `nx_motion_open` `nx_motion_status` `nx_motion_solve` `nx_motion_frames` `nx_motion_report` | 打开 .sim，列构件 / 运动副 / 自由度，求解，逐帧采样位姿，出报告图与 GIF （可以创建运动副和耦合副并求解，但是不能完全后台工作，连杆仍需人工在GUI创建）| 
 | **底层逃生舱** | `nx_python` | 在 NX 会话内执行任意 NXOpen Python 代码 |
 
 **单位统一**：mm / 度 / kg。
@@ -84,6 +84,7 @@
 # 方式一：从 Release 下载 zip 解压
 # 方式二：从源码安装
 pnpm add file:<解压目录>/dsh-nx
+# 方式三：什么年代了还手动安装？直接让ai装得了
 ```
 
 **前提**：本地已安装 Siemens NX。安装路径由 `nxHome` 配置项或 `UGII_BASE_DIR` 环境变量指定；两者都不给时自动探测：先校验 `UGII_BASE_DIR` 确实是 NX 根，再扫常见 Siemens 目录及其两层子目录，最后扫所有存在盘符根（A:–Z:）的一层子目录，取第一个带 `NXBIN\run_journal.exe` 的目录。FE 工具额外需要 `simulation` / `nastran` 许可证。
