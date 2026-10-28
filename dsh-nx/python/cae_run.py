@@ -14,7 +14,45 @@ import subprocess
 import sys
 import time
 
-NASTRAN = r"D:\software\NX\NXNASTRAN\bin\nastran.exe"
+# Mirrors lib/bridge.js NX_INSTALL_ROOTS: the Siemens folders first, then app drives.
+NX_INSTALL_ROOTS = (
+    r"C:\Program Files\Siemens",
+    r"C:\Program Files\Siemens PLM Software",
+    r"C:\Program Files (x86)\Siemens",
+    r"C:\Siemens",
+    r"C:\software",
+    r"C:\apps",
+    r"D:\Program Files\Siemens",
+    r"D:\Program Files\Siemens PLM Software",
+    r"D:\Siemens",
+    r"D:\software",
+    r"D:\apps",
+)
+
+
+def find_nastran():
+    """Locate nastran.exe: DSH_NX_NASTRAN, then UGII_BASE_DIR, then the usual NX install roots."""
+    explicit = os.environ.get("DSH_NX_NASTRAN", "")
+    if explicit and os.path.isfile(explicit):
+        return explicit
+    bases = [os.environ.get("UGII_BASE_DIR", "")]
+    for root in NX_INSTALL_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        try:
+            bases.extend(os.path.join(root, name) for name in sorted(os.listdir(root)))
+        except OSError:
+            continue
+    for base in bases:
+        if not base:
+            continue
+        exe = os.path.join(base, "NXNASTRAN", "bin", "nastran.exe")
+        if os.path.isfile(exe):
+            return exe
+    return explicit or "nastran.exe"
+
+
+NASTRAN = find_nastran()
 FONT_CANDIDATES = (
     r"C:\Windows\Fonts\msyh.ttc",
     r"C:\Windows\Fonts\msyhl.ttc",
