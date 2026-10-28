@@ -476,7 +476,9 @@ export function createNxTools(bridge) {
       'Drill a hole at a point. Default: a cylinder of diameter (or radius) starting at the point ' +
       'and running along axis, subtracted from the target body. With native:true it commits a real ' +
       'NX Hole feature instead (parametric, sits in the feature tree as a hole, drilled into the ' +
-      'flat face nearest the point along the axis).',
+      'flat face nearest the point along the axis). The native hole can be a simple bore or, with ' +
+      'type, a counterbore (counterboreDiameter + counterboreDepth) or a countersink ' +
+      '(countersinkDiameter + countersinkAngle).',
     parameters: {
       target: { type: 'string', description: 'body to cut (default: the last body)' },
       at: { ...POINT, required: true, description: '[x, y, z] mm where the hole starts (on the face)' },
@@ -485,6 +487,14 @@ export function createNxTools(bridge) {
       depth: { type: 'number', description: 'cutting length, mm (default 100)' },
       axis: { ...POINT, description: 'hole direction (default +Z)' },
       native: { type: 'boolean', description: 'commit a native Hole feature instead of a cut cylinder' },
+      type: {
+        type: 'string',
+        description: 'native hole kind: simple (default) | counterbore | countersink',
+      },
+      counterboreDiameter: { type: 'number', description: 'counterbore: head diameter, mm' },
+      counterboreDepth: { type: 'number', description: 'counterbore: head depth, mm (must be shallower than depth)' },
+      countersinkDiameter: { type: 'number', description: 'countersink: head diameter, mm' },
+      countersinkAngle: { type: 'number', description: 'countersink: included angle, degrees (default 90)' },
     },
     timeoutMs: 400_000,
     run: (args) => call('hole', {
@@ -495,8 +505,230 @@ export function createNxTools(bridge) {
       depth: args.depth,
       axis: args.axis,
       native: Boolean(args.native),
+      type: args.type,
+      counterboreDiameter: args.counterboreDiameter,
+      counterboreDepth: args.counterboreDepth,
+      countersinkDiameter: args.countersinkDiameter,
+      countersinkAngle: args.countersinkAngle,
     }, 360_000),
     render: (_args, value) => text(...featureLines(value)),
+  }));
+
+  tools.push(make({
+    name: 'nx_tube',
+    description:
+      'Sweep a pipe along a polyline (a real NX Tube feature): a solid rod with outerDiameter, or a ' +
+      'hollow pipe when innerDiameter is given. Consecutive points become line segments. The tube is ' +
+      'a separate body — unite it with nx_boolean when it has to join a solid.',
+    parameters: {
+      path: {
+        type: 'array',
+        items: POINT,
+        required: true,
+        description: 'points [x, y, z] along the path, mm (at least two)',
+      },
+      outerDiameter: { type: 'number', description: 'outer diameter, mm (default 10)' },
+      diameter: { type: 'number', description: 'alias of outerDiameter' },
+      innerDiameter: { type: 'number', description: 'bored diameter, mm (default 0 = solid rod)' },
+      tolerance: {
+        type: 'number',
+        description: 'modelling tolerance, mm (default 0.1; the tighter default fails with "Tolerance error")',
+      },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('tube', {
+      path: args.path,
+      outerDiameter: args.outerDiameter,
+      diameter: args.diameter,
+      innerDiameter: args.innerDiameter,
+      tolerance: args.tolerance,
+    }, 100_000),
+    render: (_args, value) => text(
+      `tube Ø${value.outerDiameter}${value.innerDiameter > 0 ? `/${value.innerDiameter}` : ''} along ` +
+      `${value.segments} segment(s): volume ${value.measure.volume} mm³`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_csys',
+    description:
+      'Create a cartesian coordinate system from an origin plus X and Y direction vectors (Z follows ' +
+      'from the right-hand rule). It lands in the part as a real datum coordinate system.',
+    parameters: {
+      origin: { ...POINT, description: 'origin [x, y, z] mm (default 0, 0, 0)' },
+      xDirection: { ...POINT, description: 'X direction (default 1, 0, 0)' },
+      yDirection: { ...POINT, description: 'Y direction (default 0, 1, 0)' },
+    },
+    timeoutMs: 60_000,
+    run: (args) => call('csys', {
+      origin: args.origin,
+      xDirection: args.xDirection,
+      yDirection: args.yDirection,
+    }, 50_000),
+    render: (_args, value) => text(
+      `coordinate system ${value.csys} at ${value.origin.join(', ')} ` +
+      `(X ${value.xDirection.join(', ')} · Y ${value.yDirection.join(', ')})`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_rib',
+    description:
+      'Build a contour rib (筋): a polyline laid on a face, grown to a height and a width, then united ' +
+      'into the target body. This is the moulded-rib feature — thinner than a boss and drafted by the ' +
+      'face it grows from.',
+    parameters: {
+      path: {
+        type: 'array',
+        items: POINT,
+        required: true,
+        description: 'points of the rib curve, mm (at least two)',
+      },
+      face: { ...POINT, description: 'a point on the face the rib grows from' },
+      faces: { type: 'array', items: POINT, description: 'several face points (instead of face)' },
+      height: { type: 'number', description: 'rib height above the face, mm (default 8)' },
+      width: { type: 'number', description: 'rib thickness, mm (default 3)' },
+      target: { type: 'string', description: 'body selector (default: the last body)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('rib', {
+      path: args.path,
+      face: args.face,
+      faces: args.faces,
+      height: args.height,
+      width: args.width,
+      target: selector(args.target),
+    }, 100_000),
+    render: (_args, value) => text(
+      `rib ${value.height} × ${value.width} mm over ${value.segments} segment(s), united into ` +
+      `${value.united} body: volume ${value.measure.volume} mm³`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_pattern_feature',
+    description:
+      'Pattern real FEATURES (a hole, a boss, a pad) instead of whole bodies: linear, countX × countY ' +
+      'with pitchX / pitchY. Features are picked by index ("-1" = the last feature) or by exact name. ' +
+      'Use nx_pattern for bodies.',
+    parameters: {
+      features: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'feature indexes or names (default: the last feature)',
+      },
+      countX: { type: 'number', description: 'copies along X (default 2)' },
+      countY: { type: 'number', description: 'copies along Y (default 1)' },
+      pitchX: { type: 'number', description: 'X pitch, mm (default 20)' },
+      pitchY: { type: 'number', description: 'Y pitch, mm (default 20)' },
+    },
+    timeoutMs: 180_000,
+    run: (args) => call('pattern_feature', {
+      features: args.features,
+      countX: args.countX,
+      countY: args.countY,
+      pitchX: args.pitchX,
+      pitchY: args.pitchY,
+    }, 150_000),
+    render: (_args, value) => text(
+      `${value.instances} instance(s) from ${value.features} feature(s) at ` +
+      `${value.pitchX}/${value.pitchY} mm: volume ${value.measure.volume} mm³`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_motion_open',
+    description:
+      'Open a motion part (.sim, or a .prt carrying NX Motion data) and report what it contains: ' +
+      'solver, solutions, links, joints, couplers and the remaining degrees of freedom.',
+    parameters: {
+      path: { type: 'string', description: 'absolute Windows path of a .sim / .prt (omit: the active part)' },
+      solution: { type: 'string', description: 'solution name (default: the first solution)' },
+    },
+    timeoutMs: 180_000,
+    run: (args) => call('motion_open', { path: args.path, solution: args.solution }, 150_000),
+    render: (_args, v) => text(
+      `motion ${v.part}: ${v.solver} · ${(v.links || []).length} link(s) · ` +
+      `${(v.joints || []).length} joint(s) · DOF ${v.dof}`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_motion_status',
+    description: 'The same overview as nx_motion_open for the motion part that is already open.',
+    parameters: {
+      solution: { type: 'string', description: 'solution name (default: the first solution)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('motion_status', { solution: args.solution }, 100_000),
+    render: (_args, v) => text(
+      `${v.part}: ${v.solver} · solutions ${(v.solutions || []).join(', ')} · DOF ${v.dof}`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_motion_solve',
+    description:
+      'Run the NX Motion solver for a solution (SolveNormalRunSolution) and report how many steps ' +
+      'it produced and how long it took.',
+    parameters: {
+      path: { type: 'string', description: 'absolute Windows path of a .sim / .prt (omit: the active part)' },
+      solution: { type: 'string', description: 'solution name (default: the first solution)' },
+    },
+    timeoutMs: 600_000,
+    run: (args) => call('motion_solve', { path: args.path, solution: args.solution }, 590_000),
+    render: (_args, v) => text(
+      `solution ${v.solution} solved in ${v.solveSeconds} s over ${v.steps} step(s)`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_motion_frames',
+    description:
+      'Sample every link transformation over the solved steps and write motion_frames.json / ' +
+      'motion_frames.csv into workdir — the per-frame positions behind an animation.',
+    parameters: {
+      path: { type: 'string', description: 'absolute Windows path of a .sim / .prt (omit: the active part)' },
+      solution: { type: 'string', description: 'solution name (default: the first solution)' },
+      samples: { type: 'number', description: 'how many frames to sample, 2..501 (default 101)' },
+      workdir: { type: 'string', description: 'folder for the output files' },
+    },
+    timeoutMs: 600_000,
+    run: (args) => call('motion_frames', {
+      path: args.path,
+      solution: args.solution,
+      samples: args.samples,
+      workdir: args.workdir,
+    }, 590_000),
+    render: (_args, v) => text(
+      `${(v.links || 0)} link(s) × ${v.totalSteps} step(s) → ${v.files && v.files.frames}`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_motion_report',
+    description:
+      'Solve, sample the frames and render a motion report: motion_report.png (trajectory plot) plus ' +
+      'motion_animation.gif, with the CSV as the underlying data.',
+    parameters: {
+      path: { type: 'string', description: 'absolute Windows path of a .sim / .prt (omit: the active part)' },
+      solution: { type: 'string', description: 'solution name (default: the first solution)' },
+      samples: { type: 'number', description: 'how many frames to sample, 2..501 (default 101)' },
+      workdir: { type: 'string', description: 'folder for the report files' },
+      subtitle: { type: 'array', items: { type: 'string' }, description: 'text lines under the title' },
+    },
+    timeoutMs: 900_000,
+    run: (args) => call('motion_report', {
+      path: args.path,
+      solution: args.solution,
+      samples: args.samples,
+      workdir: args.workdir,
+      subtitle: args.subtitle,
+    }, 890_000),
+    render: (_args, v) => text(
+      `report: ${v.files && v.files.report} (${v.sizes && v.sizes.report} B) · ` +
+      `animation: ${v.files && v.files.animation} (${v.sizes && v.sizes.animation} B)`,
+    ),
   }));
 
   tools.push(make({
@@ -684,6 +916,278 @@ export function createNxTools(bridge) {
     render: (_args, value) => text(
       `${value.kind} ${value.type ?? 'surface'}  ${value.bodies ?? 0} sheet(s)  area ${round(value.area)} mm²`,
       ...featureLines(value),
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_surface_sew',
+    description:
+      'Sew sheet bodies into one body — the sheet counterpart of a boolean unite, which NX refuses ' +
+      'on sheets. Give the bodies with the body selector ("0,1", "all" or names); the first one is ' +
+      'the target. Closed seams turn the result into a solid.',
+    parameters: {
+      bodies: { type: 'string', description: 'body selector, e.g. "0,1" or "all" (default: the last body)' },
+      tolerance: { type: 'number', description: 'sew tolerance, mm (default 0.01)' },
+    },
+    timeoutMs: 240_000,
+    run: (args) => call('surface_sew', { bodies: args.bodies, tolerance: args.tolerance }, 200_000),
+    render: (_args, value) => text(
+      `sew  ${value.sewn ?? 0} body(s) from ${value.inputs ?? 0}  area ${round(value.area)} mm²`,
+      ...featureLines(value),
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_thicken',
+    description:
+      'Thicken a sheet body into a solid: wall thickness grows along the face normal (reverse: true ' +
+      'flips the side). secondOffset adds a wall on the other side too, so 2 + 2 gives a 4 mm wall ' +
+      'centred on the sheet.',
+    parameters: {
+      bodies: { type: 'string', description: 'sheet body selector (default: the last body)' },
+      thickness: { type: 'number', description: 'first offset, mm (default 1)' },
+      secondOffset: { type: 'number', description: 'offset on the other side, mm (default 0 = one-sided)' },
+      reverse: { type: 'boolean', description: 'grow to the other side of the sheet' },
+      tolerance: { type: 'number', description: 'thicken tolerance, mm (default 0.01)' },
+    },
+    timeoutMs: 240_000,
+    run: (args) => call('thicken', {
+      bodies: args.bodies,
+      thickness: args.thickness,
+      second_offset: args.secondOffset,
+      reverse: args.reverse,
+      tolerance: args.tolerance,
+    }, 200_000),
+    render: (_args, value) => text(
+      `thicken ${round(value.thickness)} mm → ${value.solids ?? 0} solid(s)  ` +
+        `volume ${round(value.measure?.volume)} mm³`,
+      ...featureLines(value),
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_surface_trim_extend',
+    description:
+      'Trim or extend one sheet against another: mode "trim" cuts the target at the tool (until ' +
+      'selected), "extend" runs both sides out by distance, "corner" makes a corner between them.',
+    parameters: {
+      target: { type: 'string', description: 'body/sheet to trim (default: the last body)' },
+      tools: { type: 'string', description: 'trimming body/sheet selector ("0", name, "0,1")' },
+      mode: { type: 'string', description: 'trim (default) | extend | corner' },
+      distance: { type: 'number', description: 'extend: how far, mm' },
+      tolerance: { type: 'number', description: 'tolerance, mm (default 0.01)' },
+    },
+    timeoutMs: 240_000,
+    run: (args) => call('surface_trim_extend', {
+      target: args.target,
+      tools: args.tools,
+      mode: args.mode ?? 'trim',
+      distance: args.distance,
+      tolerance: args.tolerance,
+    }, 200_000),
+    render: (_args, value) => text(
+      `${value.mode ?? 'trim'}  ${value.bodies ?? 0} body(s)  area ${round(value.area)} mm²`,
+      ...featureLines(value),
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_surface_nside',
+    description:
+      'Patch a closed boundary loop with one N-sided surface (the holes a lofted surface leaves). ' +
+      'Give 3 or more boundary curves in order, each "x0,y0,z0; x1,y1,z1; …"; trim: false lets the ' +
+      'patch run past the boundary.',
+    parameters: {
+      curves: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'boundary curves in loop order, "x0,y0,z0; x1,y1,z1; …" (at least 3)',
+      },
+      trim: { type: 'boolean', description: 'trim the patch to the boundary (default true)' },
+      degree: { type: 'number', description: 'spline degree of each boundary curve (default 3)' },
+      tolerance: { type: 'number', description: 'position tolerance, mm (default 0.01)' },
+    },
+    timeoutMs: 240_000,
+    run: (args) => call('surface_nside', {
+      curves: curveList(args.curves, 'boundary curve'),
+      trim: args.trim,
+      degree: args.degree,
+      tolerance: args.tolerance,
+    }, 200_000),
+    render: (_args, value) => text(
+      `n-sided patch from ${value.boundary ?? 0} curve(s)  area ${round(value.area)} mm²`,
+      ...featureLines(value),
+    ),
+  }));
+
+  // ---------------------------------------------------------------- drafting annotations
+  tools.push(make({
+    name: 'nx_gdt',
+    description:
+      'Put a GD&T feature control frame on the current drawing sheet: the geometric characteristic, ' +
+      'its tolerance value and, optionally, the view it belongs to. Needs a sheet with views (nx_drawing).',
+    parameters: {
+      characteristic: {
+        type: 'string',
+        description: 'position | flatness | straightness | circularity | cylindricity | perpendicularity | ' +
+          'parallelism | angularity | concentricity | symmetry | profile_line | profile_surface | ' +
+          'circular_runout | total_runout (default position)',
+      },
+      tolerance: { type: 'string', description: 'the tolerance value shown in the frame, e.g. "0.05"' },
+      at: { ...POINT, description: 'sheet placement [x, y] mm (default: a free spot)' },
+      view: { type: 'string', description: 'view name to attach the frame to (default: free on the sheet)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('gdt', {
+      characteristic: args.characteristic,
+      tolerance: args.tolerance,
+      at: args.at,
+      view: args.view,
+    }, 100_000),
+    render: (_args, value) => text(
+      `GD&T ${value.characteristic}${value.tolerance ? ` ${value.tolerance}` : ''} at (${value.at.join(', ')})`
+        + (value.view ? ` on ${value.view}` : ''),
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_balloon',
+    description:
+      'Add a numbered balloon (item tag) to the drawing sheet — a text label at a sheet point, ' +
+      'optionally attached to a view.',
+    parameters: {
+      number: { type: 'string', description: 'the balloon number (default "1")' },
+      text: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'several lines instead of one number',
+      },
+      at: { ...POINT, description: 'sheet placement [x, y] mm (default: a free spot)' },
+      size: { type: 'number', description: 'text height mm (default 5)' },
+      view: { type: 'string', description: 'view name to attach the balloon to (default: free on the sheet)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('balloon', {
+      number: args.number,
+      text: args.text,
+      at: args.at,
+      size: args.size,
+      view: args.view,
+    }, 100_000),
+    render: (_args, value) => text(
+      `balloon ${value.text.join(' / ')} at (${value.at.join(', ')})` + (value.view ? ` on ${value.view}` : ''),
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_surface_finish',
+    description:
+      'Put a surface finish (roughness) symbol on the drawing sheet: the Ra value and an optional ' +
+      'process note, at a sheet point.',
+    parameters: {
+      value: { type: 'string', description: 'the roughness value, e.g. "3.2" (default "3.2")' },
+      method: { type: 'string', description: 'process note shown with the symbol, e.g. "machined"' },
+      at: { ...POINT, description: 'sheet placement [x, y] mm (default: a free spot)' },
+      view: { type: 'string', description: 'view name to attach the symbol to (default: free on the sheet)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('surface_finish', {
+      value: args.value,
+      method: args.method,
+      at: args.at,
+      view: args.view,
+    }, 100_000),
+    render: (_args, value) => text(
+      `surface finish Ra ${value.value}${value.method ? ` ${value.method}` : ''} at (${value.at.join(', ')})`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_centerline',
+    description:
+      'Put a centre mark on a drafting view at a sheet point — the cross on a hole or a circle in ' +
+      'the view. Give the view and the point on the sheet.',
+    parameters: {
+      at: { ...POINT, description: 'sheet point [x, y] mm (required)' },
+      view: { type: 'string', description: 'the view to put the mark on (default: the base top/front view)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('centerline', { at: args.at, view: args.view }, 100_000),
+    render: (_args, value) => text(`centre mark on ${value.view} at (${value.at.join(', ')})`),
+  }));
+
+  tools.push(make({
+    name: 'nx_drawing_frame',
+    description:
+      'Draw a GB drawing frame and title block onto the current sheet as real curves and notes — ' +
+      'the template frame does not print, this one does. Binding margin 25 mm on the left, other ' +
+      'margins 10 mm (A0–A2) or 5 mm, title block 180 × 56 mm in the bottom-right corner with part ' +
+      'name, material, scale, drawing number, designer, checker and date.',
+    parameters: {
+      partName: { type: 'string', description: 'part name for the title block (default: the part file name)' },
+      drawingNo: { type: 'string', description: 'drawing number' },
+      material: { type: 'string', description: 'material shown in the title block (default "45")' },
+      designer: { type: 'string', description: 'designer name' },
+      checker: { type: 'string', description: 'checker name' },
+      company: { type: 'string', description: 'company / unit shown across the bottom row' },
+      date: { type: 'string', description: 'date string (default: today)' },
+      scale: { type: 'string', description: 'scale text (default: the sheet scale)' },
+      binding: { type: 'number', description: 'left binding margin, mm (default 25)' },
+      margin: { type: 'number', description: 'other margins, mm (default 10 for A0–A2, else 5)' },
+      titleWidth: { type: 'number', description: 'title block width, mm (default 180)' },
+      titleHeight: { type: 'number', description: 'title block height, mm (default 56)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('drawing_frame', args, 100_000),
+    render: (_args, value) => text(
+      `frame on ${value.sheet} (${value.size.join(' × ')} mm): ${value.curves} curves, ` +
+      `${value.texts} texts, title block ${value.titleBlock.join(' × ')} mm`,
+    ),
+  }));
+
+  // ---------------------------------------------------------------- synchronous modelling
+  tools.push(make({
+    name: 'nx_sync_face',
+    description:
+      'Change one face of a solid without a sketch (synchronous modelling): "move" translates it ' +
+      'along a direction, "offset" pushes it along its own normal, "pull" drags it by a direction ' +
+      'and a distance, "resize" changes the diameter of a cylindrical face (hole wall, boss, ' +
+      'fillet). NX rebuilds the neighbouring faces to keep the body closed; the answer reports ' +
+      'the volume before and after.',
+    parameters: {
+      op: { type: 'string', description: 'move (default) | offset | pull | resize' },
+      face: { ...POINT, description: 'a point on the face to change, mm' },
+      vector: { ...POINT, description: 'move / pull: direction (default 0,0,1)' },
+      distance: { type: 'number', description: 'move / offset / pull: distance, mm' },
+      diameter: { type: 'number', description: 'resize: the new diameter, mm (default: unchanged)' },
+      body: { type: 'string', description: 'body selector (default: the last body)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('sync_face', args, 100_000),
+    render: (_args, value) => text(
+      `${value.op} on the face at ${value.face.join(', ')}: volume ${value.volumeBefore} → ` +
+      `${value.measure.volume} mm³ (${value.volumeChange >= 0 ? '+' : ''}${value.volumeChange})`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_sync_region',
+    description:
+      'Delete faces of a solid and let NX heal the gap (synchronous modelling) — the way to remove ' +
+      'a blend, a small boss or a hole wall without a sketch. NX refuses when the remaining faces ' +
+      'cannot close the area, and the error says so. (Face replacement is not exposed: it hangs ' +
+      'the batch session.)',
+    parameters: {
+      face: { ...POINT, description: 'a point on a face to delete' },
+      faces: { type: 'array', items: POINT, description: 'several points, one per face' },
+      heal: { type: 'boolean', description: 'heal the gap (default true)' },
+      body: { type: 'string', description: 'body selector (default: the last body)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('sync_region', args, 100_000),
+    render: (_args, value) => text(
+      `deleted ${value.faces} face(s): volume ${value.volumeBefore} → ` +
+      `${value.measure.volume} mm³ (${value.volumeChange >= 0 ? '+' : ''}${value.volumeChange})`,
     ),
   }));
 

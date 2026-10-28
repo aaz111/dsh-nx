@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "dsh-nx",
-  "version": "0.4.1",
+  "version": "0.4.5",
   "private": true,
   "description": "Siemens NX tools for dsh: solid modelling, drafting and PDF, STEP/IGES/STL export, assemblies, NX Nastran linear statics, plus a sidebar control panel",
   "type": "module",

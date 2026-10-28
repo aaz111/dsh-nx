@@ -30,6 +30,13 @@
 | **装配清单** | `nx_assembly_bom` `nx_assembly_clearance` | 按零件号汇总 BOM（数量/体积/质量，可导 CSV），逐对间隙矩阵（标记干涉） |
 | **图层与引用集** | `nx_layers` `nx_refset` | 图层状态管理，移动实体到图层；引用集列表/创建/删除 |
 | **有限元** | `nx_fea_spec` `nx_fea_solve` `nx_fea_solid` | NX Nastran 悬臂梁快速校核（SOL 101）；真实几何 FE（体素/铺面网格，力/压力/力矩/重力/离心，静力/模态，挠度 + Von Mises 云图） |
+| **曲面闭环** | `nx_surface_sew` `nx_thicken` `nx_surface_trim_extend` `nx_surface_nside` | 曲面缝合、加厚成实体、修剪延伸、N 边补面 |
+| **同步建模** | `nx_sync_face` `nx_sync_region` | 无草图改面：平移 / 偏置 / 拉出 / 改圆柱直径；删面并自动愈合 |
+| **制图标注** | `nx_gdt` `nx_balloon` `nx_surface_finish` `nx_centerline` | 形位公差框、序号气球、表面粗糙度、中心标记 |
+| **图框与标题栏** | `nx_drawing_frame` | 在图纸上画真实 GB 图框 + 标题栏（含中文），会随 PDF 打印 |
+| **孔型与管路** | `nx_hole`（`type`）、`nx_tube` | 沉头孔 / 锥沉头孔；沿路径生成实心或空心管道 |
+| **筋 / 特征阵列 / 坐标系** | `nx_rib` `nx_pattern_feature` `nx_csys` | 轮廓筋、线性特征阵列、基准坐标系 |
+| **运动仿真** | `nx_motion_open` `nx_motion_status` `nx_motion_solve` `nx_motion_frames` `nx_motion_report` | 打开 .sim，列构件 / 运动副 / 自由度，求解，逐帧采样位姿，出报告图与 GIF |
 | **底层逃生舱** | `nx_python` | 在 NX 会话内执行任意 NXOpen Python 代码 |
 
 **单位统一**：mm / 度 / kg。
@@ -43,12 +50,14 @@
 | 草图约束尺寸 | NXOpen `CreateDimension` 未打通 | 用 `nx_expression` 驱动参数 |
 | 隐藏线 | 批处理无隐藏线消除 | 用 `nx_section_view` 剖视展示内部 |
 | 局部放大图内容为空 | 批处理无缩放渲染 | 用剖视图替代 |
-| 图框 / 标题栏 | 模板图框不随 PDF 输出 | 用 `nx_note` 补标题栏文字 |
+| 模板图框（`nx_drawing` 的 template） | 模板图框不随 PDF 输出 | 用 `nx_drawing_frame` 画真实 GB 图框 + 标题栏 |
 | 外螺纹 | NX 本机外螺纹数据缺失 | 仅支持内螺纹 |
 | 直纹面 / 扫掠 / 投影 / 相交 / 回转曲面 | NXOpen 提交即报错 | 用 `through_curves` / `mesh` / `extrude` 替代 |
 | 装配体直接导 STL | 装配体无自身 Body | 用面板预览或导出单个零件 |
 | `nx_fillet` 重叠圆角 | NX 拒绝重叠倒角 | 分批选边圆角 |
-| NX Motion / 仿真运动 | 未暴露 | — |
+| 拔模（Draft） | `CreateDraftBuilder` 提交报内存访问违规 | 用 `nx_extrude` 的 `draft` 参数 |
+| 面替换（Replace Face） | 会让 NX 批处理会话挂死 | 用 `nx_sync_region` 删面愈合 |
+| 特征阵列残留 | 阵列后留下 0 体积 sheet body | 导出时用 `bodies` 指定实体索引 |
 | 装配求解器自动移动组件 | NX 批处理仅注册约束不求解 | 用 `nx_assembly_move` 手动定位 |
 | 真正共形网格 | 需 Simcenter 网格器 | 用 `draped` 网格（体积误差 −0.9%，孔壁仍为体素形状） |
 | Nastran 默认内存 14 GB | 桌面机不足 | 已改用 `mem=2000mb` |
@@ -76,7 +85,7 @@
 pnpm add file:<解压目录>/dsh-nx
 ```
 
-**前提**：本地已安装 Siemens NX。安装路径由 `nxHome` 配置项或 `UGII_BASE_DIR` 环境变量指定；两者都不给时自动探测常见安装位置中带 `NXBIN\run_journal.exe` 的目录。FE 工具额外需要 `simulation` / `nastran` 许可证。
+**前提**：本地已安装 Siemens NX。安装路径由 `nxHome` 配置项或 `UGII_BASE_DIR` 环境变量指定；两者都不给时自动探测：先校验 `UGII_BASE_DIR` 确实是 NX 根，再扫常见 Siemens 目录及其两层子目录，最后扫所有存在盘符根（A:–Z:）的一层子目录，取第一个带 `NXBIN\run_journal.exe` 的目录。FE 工具额外需要 `simulation` / `nastran` 许可证。
 
 ### 2.2 命令行工具
 
@@ -99,6 +108,20 @@ nx_note            # 添加文字注释
 nx_bom_table       # 在图纸上画明细表
 nx_batch_drawings  # 批量出图（逐件 A3 + PDF）
 nx_fea_solid       # 真实几何有限元分析
+nx_drawing_frame   # 画 GB 图框 + 标题栏
+nx_gdt             # 形位公差框
+nx_balloon         # 序号气球
+nx_surface_finish  # 表面粗糙度
+nx_centerline      # 中心标记
+nx_sync_face       # 同步建模改面（move/offset/pull/resize）
+nx_sync_region     # 同步建模删面愈合
+nx_surface_sew     # 曲面缝合
+nx_thicken         # 曲面加厚
+nx_tube            # 管道
+nx_rib             # 轮廓筋
+nx_pattern_feature # 特征阵列
+nx_csys            # 基准坐标系
+nx_motion_open     # 打开运动仿真件
 nx_python          # 执行 NXOpen Python 代码
 ```
 

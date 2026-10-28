@@ -1333,12 +1333,35 @@ def main():
             # rather than as a boolean of a cutting cylinder.
             face = placement_face(target, at)
             builder = part.Features.CreateHoleFeatureBuilder(NX.Features.Hole.Null)
-            builder.SetSimpleHole(
-                pnt(float(at[0]), float(at[1]), float(at[2])), False, face, expr_text(diameter))
+            where = pnt(float(at[0]), float(at[1]), float(at[2]))
+            kind = str(args.get("type") or "simple").lower()
+            detail = {"diameter": diameter, "depth": depth, "native": True}
+            if kind in ("counterbore", "counter_bore", "cbore", "cb"):
+                cb_diameter = num(args.get("counterboreDiameter", args.get("cbDiameter")),
+                                  2.0 * diameter)
+                cb_depth = num(args.get("counterboreDepth", args.get("cbDepth")), depth / 2.0)
+                if cb_depth >= depth:
+                    raise RuntimeError("counterboreDepth must be smaller than depth")
+                builder.SetCounterboreHole(
+                    where, False, face, expr_text(diameter),
+                    expr_text(cb_diameter), expr_text(cb_depth))
+                detail.update({"type": "counterbore", "counterboreDiameter": cb_diameter,
+                               "counterboreDepth": cb_depth})
+            elif kind in ("countersink", "counter_sink", "csink", "cs"):
+                cs_diameter = num(args.get("countersinkDiameter", args.get("csDiameter")),
+                                  1.8 * diameter)
+                cs_angle = num(args.get("countersinkAngle", args.get("csAngle")), 90.0)
+                builder.SetCountersinkHole(
+                    where, False, face, expr_text(diameter),
+                    expr_text(cs_diameter), expr_text(cs_angle))
+                detail.update({"type": "countersink", "countersinkDiameter": cs_diameter,
+                               "countersinkAngle": cs_angle})
+            else:
+                builder.SetSimpleHole(where, False, face, expr_text(diameter))
+                detail["type"] = "simple"
             builder.SetDepth(expr_text(depth))
             feature = builder.CommitFeature()
-            return feature_out(part, feature, {
-                "diameter": diameter, "depth": depth, "native": True})
+            return feature_out(part, feature, detail)
         builder = part.Features.CreateCylinderBuilder(NX.Features.Cylinder.Null)
         builder.Diameter.SetFormula(expr_text(diameter))
         direction = axis_vec(args.get("axis"))
@@ -1781,6 +1804,701 @@ def main():
         result = feature_out(part, feature, {"kind": kind})
         result.update(sheet_measure(bodies))
         return result
+
+    # ------------------------------------------------------------------
+    # surface closure: sew / thicken / trim-extend / N-sided patch
+    # ------------------------------------------------------------------
+    def body_faces(bodies):
+        faces = []
+        for body in bodies:
+            faces.extend(list(body.GetFaces()))
+        return faces
+
+    def cmd_surface_sew(args):
+        """Sew several sheet bodies into one: what a boolean unite cannot do for sheets."""
+        part = display_part()
+        picked = pick_bodies(part, args.get("bodies"))
+        if len(picked) < 2:
+            raise RuntimeError("sew needs at least 2 bodies (got %d)" % len(picked))
+        builder = part.Features.CreateSewBuilder(NXOpen.Features.Sew.Null)
+        builder.TargetBodies.SetArray([picked[0]])
+        builder.ToolBodies.SetArray(picked[1:])
+        builder.Tolerance = num(args.get("tolerance"), 0.01)
+        feature = builder.CommitFeature()
+        bodies = list(feature.GetBodies()) or list(part.Bodies)
+        result = feature_out(part, feature, {"kind": "sew", "inputs": len(picked), "sewn": len(bodies)})
+        result.update(sheet_measure(bodies))
+        return result
+
+    def cmd_thicken(args):
+        """Thicken a sheet into a solid; a second offset makes a two-sided wall."""
+        part = display_part()
+        picked = pick_bodies(part, args.get("bodies"))
+        faces = body_faces(picked)
+        if not faces:
+            raise RuntimeError("thicken needs a sheet body: the picked bodies carry no faces")
+        thickness = num(args.get("thickness"), 1.0)
+        builder = part.Features.CreateThickenBuilder(NXOpen.Features.Thicken.Null)
+        builder.FaceCollector.ReplaceRules([part.ScRuleFactory.CreateRuleFaceDumb(faces)], False)
+        builder.FirstOffset.SetFormula(expr_text(thickness))
+        second = num(args.get("second_offset"), 0.0)
+        if second:
+            builder.SecondOffset.SetFormula(expr_text(second))
+        builder.ReverseDirection = bool(args.get("reverse"))
+        builder.Tolerance = num(args.get("tolerance"), 0.01)
+        builder.BooleanOperation.Type = NXOpen.GeometricUtilities.BooleanOperationBooleanType.Create
+        feature = builder.CommitFeature()
+        bodies = list(feature.GetBodies())
+        result = feature_out(part, feature, {"kind": "thicken", "thickness": thickness,
+                                             "solids": len(bodies)})
+        result.update(sheet_measure(bodies))
+        return result
+
+    TRIM_MODES = {
+        "trim": "UntilSelected", "until_selected": "UntilSelected",
+        "extend": "ByDistance", "by_distance": "ByDistance",
+        "corner": "MakeCorner",
+    }
+
+    def cmd_surface_trim_extend(args):
+        """Trim or extend a sheet against another sheet."""
+        part = display_part()
+        target = pick_bodies(part, args.get("target"))
+        tools = pick_bodies(part, args.get("tools"))
+        mode = TRIM_MODES.get(str(args.get("mode") or "trim").lower())
+        if mode is None:
+            raise RuntimeError("unknown trim mode: %s (trim, extend, corner)" % args.get("mode"))
+        builder = part.Features.CreateTrimExtendBuilder(NXOpen.Features.TrimExtend.Null)
+        builder.TargetCollector.ReplaceRules(
+            [part.ScRuleFactory.CreateRuleFaceDumb(body_faces(target))], False)
+        builder.ToolCollector.ReplaceRules(
+            [part.ScRuleFactory.CreateRuleFaceDumb(body_faces(tools))], False)
+        builder.Type = getattr(NXOpen.Features.TrimExtendBuilderCreationTypes, mode)
+        builder.ExtensionMethod = NXOpen.Features.TrimExtendBuilderExtensionMethods.NaturalTangent
+        distance = num(args.get("distance"), 0.0)
+        if distance:
+            builder.TargetExtendDistance.SetFormula(expr_text(distance))
+            builder.ToolExtendDistance.SetFormula(expr_text(distance))
+        builder.Tolerance = num(args.get("tolerance"), 0.01)
+        feature = builder.CommitFeature()
+        bodies = list(feature.GetBodies())
+        result = feature_out(part, feature, {"kind": "trim_extend", "mode": mode})
+        result.update(sheet_measure(bodies))
+        return result
+
+    def cmd_surface_nside(args):
+        """Patch a closed curve loop with one N-sided surface."""
+        part = display_part()
+        raw = args.get("curves") or args.get("sections") or []
+        if len(raw) < 3:
+            raise RuntimeError("an N-sided patch needs at least 3 boundary curves (got %d)" % len(raw))
+        points = [point_list(item, "each boundary curve") for item in raw]
+        curves = [curve_through(part, item, args.get("degree") or 3) for item in points]
+        flat = [p for item in points for p in item]
+        help_point = (sum(p[0] for p in flat) / len(flat),
+                      sum(p[1] for p in flat) / len(flat),
+                      sum(p[2] for p in flat) / len(flat))
+        builder = part.Features.CreateNSidedSurfaceBuilder(NXOpen.Features.NSidedSurface.Null)
+        section = builder.OuterLoop
+        section.Clear()
+        section.AddToSection([part.ScRuleFactory.CreateRuleCurveDumb(curves)], curves[0],
+                             NXOpen.NXObject.Null, NXOpen.NXObject.Null,
+                             NX.Point3d(help_point[0], help_point[1], help_point[2]),
+                             NXOpen.Section.Mode.Create)
+        builder.PositionTolerance = num(args.get("tolerance"), 0.01)
+        builder.TrimToBoundary = bool(args.get("trim", True))
+        feature = builder.CommitFeature()
+        bodies = list(feature.GetBodies())
+        result = feature_out(part, feature, {"kind": "nside", "boundary": len(curves)})
+        result.update(sheet_measure(bodies))
+        return result
+
+    # ------------------------------------------------------------------
+    # drafting annotations: GD&T frame, balloon, surface finish, centre mark
+    # ------------------------------------------------------------------
+    FCF_CHARACTERISTICS = {
+        "position": "Position", "flatness": "Flatness", "straightness": "Straightness",
+        "circularity": "Circularity", "cylindricity": "Cylindricity",
+        "perpendicularity": "Perpendicularity", "parallelism": "Parallelism",
+        "angularity": "Angularity", "concentricity": "Concentricity", "symmetry": "Symmetry",
+        "profile_line": "ProfileOfALine", "profile_surface": "ProfileOfASurface",
+        "circular_runout": "CircularRunout", "total_runout": "TotalRunout",
+    }
+
+    def annotation_view(part, wanted):
+        """The drafting view a label should ride on (None keeps it free on the sheet)."""
+        if not wanted:
+            return None
+        return pick_view(part, wanted)
+
+    def place_origin(builder, view, at):
+        builder.Origin.OriginPoint = pnt(float(at[0]), float(at[1]), float(at[2]))
+        if view is not None:
+            try:
+                builder.Origin.AnnotationView = view
+            except Exception as error:
+                out("annotation view not attached:", repr(error))
+
+    def cmd_gdt(args):
+        """A GD&T feature control frame: characteristic, tolerance and frame count."""
+        part = display_part()
+        raw = str(args.get("characteristic") or "position").strip().lower().replace("-", "_").replace(" ", "_")
+        characteristic = FCF_CHARACTERISTICS.get(raw)
+        if not characteristic:
+            raise RuntimeError("unknown characteristic %r — use one of: %s"
+                               % (raw, ", ".join(sorted(FCF_CHARACTERISTICS))))
+        at = args.get("at") or free_spot(part)
+        view = annotation_view(part, args.get("view"))
+        builder = part.Annotations.CreateDraftingFeatureControlFrameBuilder(
+            NXOpen.Annotations.Gdt.Null)
+        builder.Characteristic = getattr(builder.FcfCharacteristic, characteristic)
+        frames = builder.FeatureControlFrameDataList.GetContents()
+        frame = frames[0]
+        tolerance = args.get("tolerance")
+        if tolerance is not None:
+            frame.ToleranceValue = str(tolerance)
+        place_origin(builder, view, at)
+        gdt = builder.Commit()
+        return {"characteristic": characteristic, "tolerance": tolerance,
+                "frames": len(frames), "at": [round(float(v), 2) for v in at[:2]],
+                "view": fix_text(view.Name) if view is not None else None,
+                "annotation": str(gdt)}
+
+    def cmd_balloon(args):
+        """A numbered balloon (item tag) on the sheet — the leader is optional."""
+        part = display_part()
+        lines = args.get("text")
+        if lines is None:
+            lines = args.get("number")
+        if lines is None:
+            lines = "1"
+        if isinstance(lines, (list, tuple)):
+            text_lines = [str(item) for item in lines if str(item).strip()]
+        else:
+            text_lines = [str(lines)]
+        if not text_lines:
+            raise RuntimeError("balloon text is required")
+        at = args.get("at") or free_spot(part)
+        size = float(args.get("size") or 5.0)
+        view = annotation_view(part, args.get("view"))
+        builder = part.Annotations.CreateDraftingNoteBuilder(None)
+        builder.Text.SetEditorText(text_lines)
+        try:
+            builder.Style.LetteringStyle.GeneralTextSize = size
+        except Exception as error:
+            out("balloon text size not set:", repr(error))
+        place_origin(builder, view, at)
+        note = builder.Commit()
+        return {"text": text_lines, "size": size,
+                "at": [round(float(v), 2) for v in at[:2]],
+                "view": fix_text(view.Name) if view is not None else None,
+                "annotation": str(note)}
+
+    def cmd_surface_finish(args):
+        """A surface finish (roughness) symbol: Ra value plus an optional process note."""
+        part = display_part()
+        value = str(args.get("value") or "3.2")
+        at = args.get("at") or free_spot(part)
+        view = annotation_view(part, args.get("view"))
+        builder = part.Annotations.DraftingSurfaceFinishSymbol.CreateDraftingSurfaceFinishSymbolBuilder(None)
+        builder.A1 = value
+        method = args.get("method")
+        if method:
+            try:
+                builder.B = str(method)
+            except Exception as error:
+                out("process note not set:", repr(error))
+        place_origin(builder, view, at)
+        symbol = builder.Commit()
+        return {"value": value, "method": method,
+                "at": [round(float(v), 2) for v in at[:2]],
+                "view": fix_text(view.Name) if view is not None else None,
+                "annotation": str(symbol)}
+
+    def cmd_centerline(args):
+        """A centre mark on a drafting view, at a sheet point or a model circle centre."""
+        part = display_part()
+        view = pick_view(part, args.get("view"))
+        at = args.get("at")
+        if not at or len(at) < 2:
+            raise RuntimeError("at [x, y] on the sheet (mm) is required")
+        point = part.Points.CreatePoint(pnt(float(at[0]), float(at[1]), 0.0))
+        builder = part.Annotations.Centerlines.CreateCenterMarkBuilder(None)
+        builder.Locations.Clear()
+        builder.Locations.AddWithViews([point], [view])
+        builder.Commit()
+        return {"kind": "center_mark", "view": fix_text(view.Name),
+                "at": [round(float(at[0]), 2), round(float(at[1]), 2)]}
+
+    def cmd_drawing_frame(args):
+        """A GB drawing frame plus title block, drawn as real sheet curves.
+
+        A sheet made from an NX template prints its views but not the template
+        frame, so the frame is drawn here as drafting curves + notes.
+        """
+        part = display_part()
+        sheet = part.DrawingSheets.CurrentDrawingSheet
+        width = float(sheet.Length)
+        height = float(sheet.Height)
+        binding = float(args.get("binding") if args.get("binding") is not None else 25.0)
+        margin = float(args.get("margin") if args.get("margin") is not None
+                       else (10.0 if width > 500.0 else 5.0))
+        tb_width = float(args.get("titleWidth") or 180.0)
+        tb_height = float(args.get("titleHeight") or 56.0)
+        if tb_width > width - margin - binding:
+            tb_width = width - margin - binding
+        if tb_height > height - margin * 2:
+            tb_height = height - margin * 2
+        part_name = str(args.get("partName") or part.LeafName)
+        company = str(args.get("company") or "")
+        drawing_no = str(args.get("drawingNo") or "")
+        material = str(args.get("material") or "45")
+        designer = str(args.get("designer") or "")
+        checker = str(args.get("checker") or "")
+        date = str(args.get("date") or time.strftime("%Y-%m-%d"))
+        try:
+            raw = args.get("scale") or sheet.GetScale()
+            if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                scale = "%g:%g" % (float(raw[0]), float(raw[1]))
+            else:
+                scale = str(raw)
+        except Exception:
+            scale = str(args.get("scale") or "1:1")
+
+        cjk = any(ord(ch) > 127 for ch in part_name + company + material)
+        font_index = None
+        if cjk:
+            try:
+                font_index = int(part.Fonts.AddFont("chinesef", NX.FontCollectionType.Nx))
+            except Exception as error:
+                out("cjk font not available:", repr(error))
+
+        was_active = bool(sheet.IsActiveForSketching)
+        if not was_active:
+            sheet.ActivateForSketching()
+        drawn = [0]
+
+        def seg(x1, y1, x2, y2):
+            part.Curves.CreateLine(pnt(x1, y1, 0.0), pnt(x2, y2, 0.0))
+            drawn[0] += 1
+
+        def box(x1, y1, x2, y2):
+            seg(x1, y1, x2, y1)
+            seg(x2, y1, x2, y2)
+            seg(x2, y2, x1, y2)
+            seg(x1, y2, x1, y1)
+
+        box(0.0, 0.0, width, height)
+        x0, y0 = binding, margin
+        x1, y1 = width - margin, height - margin
+        box(x0, y0, x1, y1)
+
+        tb_x1, tb_y0 = x1, y0
+        tb_x0 = tb_x1 - tb_width
+        tb_y1 = tb_y0 + tb_height
+        box(tb_x0, tb_y0, tb_x1, tb_y1)
+
+        rows, cols = 4, 4
+        row_h = tb_height / rows
+        col_w = tb_width / cols
+        for i in range(1, rows):
+            seg(tb_x0, tb_y0 + row_h * i, tb_x1, tb_y0 + row_h * i)
+        for i in range(1, cols):
+            for r in range(rows):
+                seg(tb_x0 + col_w * i, tb_y0 + row_h * r,
+                    tb_x0 + col_w * i, tb_y0 + row_h * (r + 1))
+
+        written = [0]
+
+        def cell(text, col, row, size=3.0):
+            text = str(text or "").strip()
+            if not text:
+                return
+            note = part.Annotations.CreateDraftingNoteBuilder(None)
+            note.Text.SetEditorText([text])
+            if font_index is not None:
+                try:
+                    note.Style.LetteringStyle.GeneralTextFont = font_index
+                except Exception as error:
+                    out("title font not set:", repr(error))
+            try:
+                note.Style.LetteringStyle.GeneralTextSize = float(size)
+            except Exception as error:
+                out("title text size not set:", repr(error))
+            note.Origin.OriginPoint = pnt(tb_x0 + col_w * col + 1.2,
+                                          tb_y0 + row_h * row + row_h * 0.32, 0.0)
+            note.Commit()
+            written[0] += 1
+
+        cell(part_name, 0, 3)
+        cell("材料 " + material, 2, 3)
+        cell("比例 " + scale, 3, 3)
+        if drawing_no:
+            cell("图号 " + drawing_no, 0, 2)
+        if designer:
+            cell("设计 " + designer, 2, 2)
+        if checker:
+            cell("审核 " + checker, 3, 2)
+        cell("日期 " + date, 0, 1)
+        if company:
+            cell("单位 " + company, 2, 1)
+        cell(company or part_name, 0, 0, size=4.0)
+
+        if not was_active:
+            sheet.ResetActiveForSketching()
+        return {"sheet": fix_text(sheet.Name),
+                "size": [round(width, 2), round(height, 2)],
+                "curves": drawn[0], "texts": written[0],
+                "titleBlock": [round(tb_width, 2), round(tb_height, 2)],
+                "margins": {"binding": binding, "other": margin},
+                "font": font_index}
+
+    # ------------------------------------------------------------------
+    # synchronous modelling: move / offset / pull / resize a face, replace or delete faces
+    # ------------------------------------------------------------------
+    SYNC_FACE_OPS = ("move", "offset", "pull", "resize")
+
+    def sync_body(part, selector, what):
+        picked = pick_bodies(part, selector)
+        if not picked:
+            raise RuntimeError("no body to %s" % what)
+        return picked[0]
+
+    def sync_rule(part, faces):
+        return part.ScRuleFactory.CreateRuleFaceDumb(faces)
+
+    def sync_direction(part, vector):
+        values = [float(item) for item in (vector or [0.0, 0.0, 1.0])]
+        if len(values) != 3:
+            raise RuntimeError("direction needs three numbers, got %r" % (vector,))
+        length = (values[0] ** 2 + values[1] ** 2 + values[2] ** 2) ** 0.5
+        if length <= 1e-9:
+            raise RuntimeError("direction vector must not be zero")
+        return part.Directions.CreateDirection(
+            pnt(0.0, 0.0, 0.0),
+            vec(values[0] / length, values[1] / length, values[2] / length),
+            NX.SmartObjectUpdateOption.DontUpdate)
+
+    def sync_commit(part, builder):
+        """CommitFeature returns None for several synchronous builders; fall back on the history."""
+        before = len(list(part.Features))
+        feature = builder.CommitFeature()
+        if feature is None:
+            features = list(part.Features)
+            if len(features) > before:
+                feature = features[-1]
+        if feature is None:
+            raise RuntimeError("NX committed the feature but did not report it")
+        return feature
+
+    def sync_face_specs(part, args):
+        raw = args.get("faces")
+        if raw is None:
+            raw = args.get("face") or args.get("at")
+            if raw is None:
+                raise RuntimeError("face is required: a point [x, y, z], or {index|radius|diameter|z|area}")
+            raw = [raw]
+        elif isinstance(raw, (list, tuple)) and len(raw) == 3 and all(
+                isinstance(value, (int, float)) for value in raw):
+            raw = [raw]
+        elif not isinstance(raw, (list, tuple)):
+            raw = [raw]
+        return [pick_part_face(part, spec) for spec in raw]
+
+    def cmd_sync_face(args):
+        """Move, offset, pull or resize one face with synchronous modelling."""
+        part = display_part()
+        op = str(args.get("op") or "move").strip().lower()
+        if op not in SYNC_FACE_OPS:
+            raise RuntimeError("unknown op %r — use one of: %s" % (op, ", ".join(SYNC_FACE_OPS)))
+        sync_body(part, args.get("body"), op)
+        spec = args.get("face") or args.get("at")
+        if spec is None:
+            raise RuntimeError("face is required: a point [x, y, z] on it, or {index|radius|diameter|z|area}")
+        row = pick_part_face(part, spec)
+        face = row["face"]
+        rules = [sync_rule(part, [face])]
+        before_volume = measure(part).get("volume")
+        if op == "move":
+            builder = part.Features.CreateMoveFaceBuilder(None)
+            builder.MoveFaceCollector.ReplaceRules(rules, False)
+            builder.Type = NXOpen.Features.MoveFaceBuilderTypes.TranslateDirectionAndDistance
+            builder.Direction = sync_direction(part, args.get("vector") or args.get("direction"))
+            builder.Distance.SetFormula(expr_text(num(args.get("distance"), 10.0)))
+        elif op == "offset":
+            builder = part.Features.CreateOffsetRegionBuilder(None)
+            builder.Face.ReplaceRules(rules, False)
+            builder.Distance.SetFormula(expr_text(num(args.get("distance"), 5.0)))
+            reverse = args.get("reverse")
+            if reverse is not None:
+                try:
+                    builder.ReverseDirection = bool(reverse)
+                except Exception as error:
+                    out("offset reverse not applied:", repr(error))
+        elif op == "pull":
+            builder = part.Features.CreatePullFaceBuilder(None)
+            builder.FaceToPull.ReplaceRules(rules, False)
+            motion = builder.Motion
+            motion.Option = NXOpen.GeometricUtilities.ModlMotionOptions.Distance
+            motion.DistanceValue.SetFormula(expr_text(num(args.get("distance"), 10.0)))
+            motion.DistanceVector = sync_direction(part, args.get("vector") or args.get("direction"))
+        else:
+            builder = part.Features.CreateResizeFaceBuilder(None)
+            builder.Face.Add(face)
+            diameter = args.get("diameter")
+            if diameter is None:
+                diameter = float(row["radius"]) * 2.0
+            if float(diameter) <= 0.0:
+                raise RuntimeError("resize needs a positive diameter (face radius is %g)" % float(row["radius"]))
+            builder.Diameter.SetFormula(expr_text(float(diameter)))
+            angle = args.get("angle")
+            if angle is not None:
+                try:
+                    builder.Angle.SetFormula(expr_text(float(angle)))
+                except Exception as error:
+                    out("resize angle not applied:", repr(error))
+        feature = sync_commit(part, builder)
+        result = feature_out(part, feature, {
+            "kind": "sync_face",
+            "op": op,
+            "face": [round(float(row["cog"].X), 3), round(float(row["cog"].Y), 3),
+                     round(float(row["cog"].Z), 3)],
+            "area": round(float(row["area"]), 3),
+            "radius": round(float(row["radius"]), 3),
+        })
+        if before_volume is not None:
+            result["volumeBefore"] = round(float(before_volume), 3)
+            result["volumeChange"] = round(
+                float(result["measure"]["volume"]) - float(before_volume), 3)
+        return result
+
+    def cmd_sync_region(args):
+        """Delete faces of a body and let NX heal the gap (synchronous modelling)."""
+        part = display_part()
+        op = str(args.get("op") or "delete").strip().lower()
+        if op != "delete":
+            raise RuntimeError("unknown op %r — this build only deletes faces; replace-face hangs "
+                               "the NX session and is not exposed" % op)
+        sync_body(part, args.get("body"), op)
+        before_volume = measure(part).get("volume")
+        rows = sync_face_specs(part, args)
+        faces = [row["face"] for row in rows]
+        builder = part.Features.CreateDeleteFaceBuilder(None)
+        builder.FaceCollector.ReplaceRules([sync_rule(part, faces)], False)
+        heal = args.get("heal")
+        builder.Heal = True if heal is None else bool(heal)
+        feature = sync_commit(part, builder)
+        result = feature_out(part, feature, {
+            "kind": "sync_region",
+            "op": op,
+            "faces": len(faces),
+        })
+        if before_volume is not None:
+            result["volumeBefore"] = round(float(before_volume), 3)
+            result["volumeChange"] = round(
+                float(result["measure"]["volume"]) - float(before_volume), 3)
+        return result
+
+    # ------------------------------------------------------------------
+    # pipes, coordinate systems, ribs and feature patterns
+
+    def pattern_features(part, spec):
+        """Pick features for a pattern: indexes ("-1" the last one) or exact names."""
+        features = list(part.Features)
+        if not spec:
+            spec = [-1]
+        if not isinstance(spec, (list, tuple)):
+            spec = [spec]
+        picked = []
+        for item in spec:
+            text = str(item).strip()
+            if text.lstrip("-").isdigit():
+                index = int(text)
+                try:
+                    picked.append(features[index])
+                except IndexError:
+                    raise RuntimeError("feature index %d is out of range (%d features)"
+                                       % (index, len(features)))
+                continue
+            match = [f for f in features if (getattr(f, "Name", "") or "").strip() == text]
+            if not match:
+                raise RuntimeError("no feature named %r" % text)
+            picked.append(match[0])
+        if not picked:
+            raise RuntimeError("no feature to pattern")
+        return picked
+
+    def cmd_tube(args):
+        """A pipe along a polyline: a real Tube feature, hollow when innerDiameter is given."""
+        part = display_part()
+        points = args.get("path") or args.get("points") or []
+        if len(points) < 2:
+            raise RuntimeError("path needs at least two points")
+        curves = []
+        for index in range(len(points) - 1):
+            a, b = points[index], points[index + 1]
+            if [float(v) for v in a] == [float(v) for v in b]:
+                continue
+            curves.append(part.Curves.CreateLine(
+                pnt(float(a[0]), float(a[1]), float(a[2])),
+                pnt(float(b[0]), float(b[1]), float(b[2]))))
+        if not curves:
+            raise RuntimeError("path has no non-zero segment")
+        outer = num(args.get("outerDiameter", args.get("diameter")), 10.0)
+        inner = num(args.get("innerDiameter"), 0.0)
+        if inner < 0 or inner >= outer:
+            raise RuntimeError("innerDiameter must be smaller than outerDiameter")
+        builder = part.Features.CreateTubeBuilder(NX.Features.Tube.Null)
+        helper = points[0]
+        builder.PathSection.AddToSection(
+            [part.ScRuleFactory.CreateRuleCurveDumb(curves)], curves[0],
+            NX.NXObject.Null, NX.NXObject.Null,
+            pnt(float(helper[0]), float(helper[1]), float(helper[2])), NX.Section.Mode.Create)
+        builder.OuterDiameter.SetFormula(expr_text(outer))
+        if inner > 0:
+            builder.InnerDiameter.SetFormula(expr_text(inner))
+        # The modelling tolerance defaults too tight for a tube and the commit fails with
+        # "Tolerance error"; a tenth of a millimetre builds exactly the nominal volume.
+        builder.Tolerance = num(args.get("tolerance"), 0.1)
+        feature = sync_commit(part, builder)
+        return feature_out(part, feature, {
+            "outerDiameter": outer, "innerDiameter": inner,
+            "segments": len(curves), "tolerance": builder.Tolerance})
+
+    def cmd_csys(args):
+        """A cartesian coordinate system from an origin plus two direction vectors."""
+        part = display_part()
+        origin = args.get("origin") or [0, 0, 0]
+        xd = args.get("xDirection") or [1, 0, 0]
+        yd = args.get("yDirection") or [0, 1, 0]
+        if len(origin) != 3 or len(xd) != 3 or len(yd) != 3:
+            raise RuntimeError("origin, xDirection and yDirection each need three numbers")
+        csys = part.CoordinateSystems.CreateCoordinateSystem(
+            pnt(float(origin[0]), float(origin[1]), float(origin[2])),
+            vec(float(xd[0]), float(xd[1]), float(xd[2])),
+            vec(float(yd[0]), float(yd[1]), float(yd[2])))
+        return {
+            "csys": csys.Tag,
+            "origin": [float(value) for value in origin],
+            "xDirection": [float(value) for value in xd],
+            "yDirection": [float(value) for value in yd],
+            "measure": measure(part),
+        }
+
+    def cmd_rib(args):
+        """A contour rib: a curve laid on a face, grown to a height and a width."""
+        part = display_part()
+        target = sync_body(part, args.get("target"), "carry a rib")
+        faces = []
+        if args.get("face") is not None or args.get("faces") is not None or args.get("at") is not None:
+            faces = sync_face_specs(part, args)
+        points = args.get("path") or args.get("points") or []
+        if len(points) < 2:
+            raise RuntimeError("path needs at least two points")
+        curves = []
+        for index in range(len(points) - 1):
+            a, b = points[index], points[index + 1]
+            curves.append(part.Curves.CreateLine(
+                pnt(float(a[0]), float(a[1]), float(a[2])),
+                pnt(float(b[0]), float(b[1]), float(b[2]))))
+        height = num(args.get("height"), 8.0)
+        width = num(args.get("width"), 3.0)
+        helper = points[0]
+        tags = set(body.Tag for body in list(part.Bodies))
+        feature = None
+        refusal = None
+        # The point that names the face is often nearer to a side wall's centroid
+        # than to the big face it lies on, so try the nearest few and keep the one
+        # that accepts the projection.
+        rows = []
+        for body in list(part.Bodies):
+            for index, face in enumerate(list(body.GetFaces())):
+                try:
+                    info = face_props(face)
+                except Exception:
+                    continue
+                rows.append({"face": face, "index": index,
+                             "area": float(info[0]), "radius": float(info[2]),
+                             "cog": info[3]})
+        def rank(row):
+            distance = ((row["cog"].X - helper[0]) ** 2 +
+                        (row["cog"].Y - helper[1]) ** 2 +
+                        (row["cog"].Z - helper[2]) ** 2) ** 0.5
+            # a big face wins over a nearer small wall: the rib grows on the face
+            # the curve is drawn on, not on the wall whose centroid happens to be close
+            return distance / max(float(row["area"]) ** 0.5, 1.0)
+
+        ranked = sorted(rows or faces, key=rank)
+        chosen = None
+        for row in ranked[:4]:
+            builder = part.Features.CreateContourRibBuilder(NX.Features.ContourRib.Null)
+            builder.SelectCurve.AddToSection(
+                [part.ScRuleFactory.CreateRuleCurveDumb(curves)], curves[0],
+                NX.NXObject.Null, NX.NXObject.Null,
+                pnt(float(helper[0]), float(helper[1]), float(helper[2])), NX.Section.Mode.Create)
+            builder.SelectFace.ReplaceRules([sync_rule(part, [row["face"]])], False)
+            builder.HeightDim.SetFormula(expr_text(height))
+            builder.WidthDim.SetFormula(expr_text(width))
+            try:
+                feature = sync_commit(part, builder)
+                chosen = row
+                break
+            except Exception as error:
+                refusal = error
+                try:
+                    builder.Destroy()
+                except Exception:
+                    pass
+        if feature is None:
+            raise RuntimeError(
+                "the rib curve could not be grown on any of the %d nearest faces (%s); "
+                "pass face as {index: N} from nx_faces to pick one explicitly"
+                % (min(6, len(ranked)), refusal))
+        united = 0
+        for body in list(part.Bodies):
+            if body.Tag in tags:
+                continue
+            boolean = part.Features.CreateBooleanBuilder(NX.Features.BooleanFeature.Null)
+            boolean.Operation = NX.Features.FeatureBooleanType.Unite
+            boolean.Target = target
+            boolean.Tool = body
+            boolean.Commit()
+            united += 1
+        detail = {"height": height, "width": width, "segments": len(curves), "united": united}
+        if chosen is not None:
+            detail["faceArea"] = round(float(chosen["area"]), 2)
+            detail["faceCenter"] = [round(float(chosen["cog"].X), 3),
+                                    round(float(chosen["cog"].Y), 3),
+                                    round(float(chosen["cog"].Z), 3)]
+        return feature_out(part, feature, detail)
+
+    def cmd_pattern_feature(args):
+        """Pattern real features (a hole, a boss, a pad) linearly, not whole bodies."""
+        part = display_part()
+        picked = pattern_features(part, args.get("features"))
+        method = str(args.get("method") or "linear").lower()
+        if not method.startswith("lin"):
+            raise RuntimeError("only method=linear is implemented; the circular definition "
+                               "needs a rotation vector this build does not set yet")
+        count_x = max(1, int(num(args.get("countX"), 2)))
+        count_y = max(1, int(num(args.get("countY"), 1)))
+        pitch_x = num(args.get("pitchX"), 20.0)
+        pitch_y = num(args.get("pitchY"), 20.0)
+        builder = part.Features.CreatePatternFeatureBuilder(NX.Features.PatternFeature.Null)
+        service = builder.PatternService
+        service.PatternType = NX.GeometricUtilities.PatternDefinitionPatternEnum.Linear
+        rect = service.RectangularDefinition
+        for spacing, count, pitch in ((rect.XSpacing, count_x, pitch_x),
+                                      (rect.YSpacing, count_y, pitch_y)):
+            spacing.SpaceType = NX.GeometricUtilities.PatternSpacingSpacingType.Pitch
+            spacing.NCopies.SetFormula(str(count))
+            spacing.PitchDistance.SetFormula(expr_text(pitch))
+        builder.FeatureList.Add(picked)
+        feature = sync_commit(part, builder)
+        return feature_out(part, feature, {
+            "features": len(picked), "countX": count_x, "countY": count_y,
+            "pitchX": pitch_x, "pitchY": pitch_y,
+            "instances": count_x * count_y})
 
     # ------------------------------------------------------------------
     # datums and sketches
@@ -4276,6 +4994,21 @@ def main():
         "thread": cmd_thread,
         "curve": cmd_curve,
         "surface": cmd_surface,
+        "surface_sew": cmd_surface_sew,
+        "thicken": cmd_thicken,
+        "surface_trim_extend": cmd_surface_trim_extend,
+        "surface_nside": cmd_surface_nside,
+        "gdt": cmd_gdt,
+        "balloon": cmd_balloon,
+        "surface_finish": cmd_surface_finish,
+        "centerline": cmd_centerline,
+        "drawing_frame": cmd_drawing_frame,
+        "sync_face": cmd_sync_face,
+        "sync_region": cmd_sync_region,
+        "tube": cmd_tube,
+        "csys": cmd_csys,
+        "rib": cmd_rib,
+        "pattern_feature": cmd_pattern_feature,
         "datum": cmd_datum,
         "sketch": cmd_sketch,
         "shell": cmd_shell,

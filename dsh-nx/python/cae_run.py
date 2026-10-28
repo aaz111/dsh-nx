@@ -30,25 +30,74 @@ NX_INSTALL_ROOTS = (
 )
 
 
+SKIP_DIRS = {
+    "windows", "users", "programdata", "$recycle.bin", "system volume information",
+    "recovery", "perflogs", "msocache", "config.msi", "node_modules", ".git",
+}
+
+
+def _sub_dirs(directory):
+    """Immediate sub folders of `directory`, minus the ones no install lives in."""
+    try:
+        return [os.path.join(directory, name) for name in sorted(os.listdir(directory))
+                if name.lower() not in SKIP_DIRS
+                and os.path.isdir(os.path.join(directory, name))]
+    except OSError:
+        return []
+
+
 def find_nastran():
-    """Locate nastran.exe: DSH_NX_NASTRAN, then UGII_BASE_DIR, then the usual NX install roots."""
+    r"""Locate nastran.exe the way NX itself would: DSH_NX_NASTRAN, then UGII_BASE_DIR
+    (only when it really is an NX home), then the usual install roots and their sub
+    folders, then the top level of every existing drive -- so an install on E:\ or in
+    D:\apps\Siemens\NX is found without any environment variable."""
     explicit = os.environ.get("DSH_NX_NASTRAN", "")
     if explicit and os.path.isfile(explicit):
         return explicit
-    bases = [os.environ.get("UGII_BASE_DIR", "")]
-    for root in NX_INSTALL_ROOTS:
-        if not os.path.isdir(root):
-            continue
-        try:
-            bases.extend(os.path.join(root, name) for name in sorted(os.listdir(root)))
-        except OSError:
-            continue
-    for base in bases:
+
+    seen = set()
+
+    def hit(base):
         if not base:
-            continue
+            return None
+        key = os.path.normcase(base)
+        if key in seen:
+            return None
+        seen.add(key)
         exe = os.path.join(base, "NXNASTRAN", "bin", "nastran.exe")
-        if os.path.isfile(exe):
-            return exe
+        return exe if os.path.isfile(exe) else None
+
+    found = hit(os.environ.get("UGII_BASE_DIR", ""))
+    if found:
+        return found
+
+    for root in NX_INSTALL_ROOTS:
+        found = hit(root)
+        if found:
+            return found
+        first = _sub_dirs(root)
+        for sub in first:
+            found = hit(sub)
+            if found:
+                return found
+        for sub in first:
+            for deep in _sub_dirs(sub):
+                found = hit(deep)
+                if found:
+                    return found
+
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        drive = letter + ":\\"
+        if not os.path.isdir(drive):
+            continue
+        found = hit(drive)
+        if found:
+            return found
+        for sub in _sub_dirs(drive):
+            found = hit(sub)
+            if found:
+                return found
+
     return explicit or "nastran.exe"
 
 

@@ -55,24 +55,76 @@ function isNxHome(dir) {
     }
 }
 
-/** NX install root: the explicit option or UGII_BASE_DIR wins, else probe the standard places. */
+/** Folders that never hold an NX install; skipping them keeps the probe fast. */
+const SKIP_DIRS = new Set([
+    'windows', 'users', 'programdata', '$recycle.bin', 'system volume information',
+    'recovery', 'perflogs', 'msocache', 'config.msi', 'node_modules', '.git',
+]);
+
+/** Immediate sub folders of `dir`, without the ones no install lives in. */
+function subDirs(dir) {
+    try {
+        return fs.readdirSync(dir, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory() && !SKIP_DIRS.has(entry.name.toLowerCase()))
+            .map((entry) => path.join(dir, entry.name));
+    }
+    catch {
+        return [];
+    }
+}
+
+/**
+ * NX install root: UGII_BASE_DIR when it really is one, else the usual Siemens
+ * folders (and their sub folders), then the top level of every existing drive --
+ * so a machine that keeps NX on E:\ or in D:\apps\Siemens\NX is found without
+ * needing any environment variable.
+ */
 function findNxHome() {
-    if (process.env.UGII_BASE_DIR)
-        return process.env.UGII_BASE_DIR;
-    const candidates = [];
+    const env = process.env.UGII_BASE_DIR;
+    if (env && isNxHome(env))
+        return env;
+    const seen = new Set();
+    const hit = (dir) => {
+        const key = String(dir).toLowerCase();
+        if (!key || seen.has(key))
+            return false;
+        seen.add(key);
+        return isNxHome(dir);
+    };
     for (const base of NX_INSTALL_ROOTS) {
-        candidates.push(base);
-        try {
-            for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
-                if (entry.isDirectory())
-                    candidates.push(path.join(base, entry.name));
+        if (hit(base))
+            return base;
+        const first = subDirs(base);
+        for (const sub of first) {
+            if (hit(sub))
+                return sub;
+        }
+        for (const sub of first) {
+            for (const deep of subDirs(sub)) {
+                if (hit(deep))
+                    return deep;
             }
         }
+    }
+    for (let code = 65; code <= 90; code += 1) {
+        const drive = `${String.fromCharCode(code)}:\\`;
+        let exists = false;
+        try {
+            exists = fs.existsSync(drive);
+        }
         catch {
-            // not installed there
+            exists = false;
+        }
+        if (!exists)
+            continue;
+        if (hit(drive))
+            return drive;
+        for (const sub of subDirs(drive)) {
+            if (hit(sub))
+                return sub;
         }
     }
-    return candidates.find(isNxHome) ?? 'C:\\Program Files\\Siemens\\NX';
+    return 'C:\\Program Files\\Siemens\\NX';
 }
 
 export class NxBridge {
