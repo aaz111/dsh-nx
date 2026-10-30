@@ -34,7 +34,6 @@
 | **图框与标题栏** | `nx_drawing_frame` | 在图纸上画真实 GB 图框 + 标题栏（含中文），会随 PDF 打印 |
 | **孔型与管路** | `nx_hole`（`type`）、`nx_tube` | 沉头孔 / 锥沉头孔；沿路径生成实心或空心管道 |
 | **筋 / 特征阵列 / 坐标系** | `nx_rib` `nx_pattern_feature` `nx_csys` | 轮廓筋、线性特征阵列、基准坐标系 |
-| **运动仿真** | `nx_motion_open` `nx_motion_status` `nx_motion_solve` `nx_motion_frames` `nx_motion_report` | 打开 .sim，列构件 / 运动副 / 自由度，求解，逐帧采样位姿，出报告图与 GIF |
 | **底层逃生舱** | `nx_python` | 在 NX 会话内执行任意 NXOpen Python 代码 |
 
 **单位统一**：mm / 度 / kg。
@@ -108,7 +107,6 @@ nx_tube            # 管道
 nx_rib             # 轮廓筋
 nx_pattern_feature # 特征阵列
 nx_csys            # 基准坐标系
-nx_motion_open     # 打开运动仿真件
 nx_python          # 执行 NXOpen Python 代码
 ```
 

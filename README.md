@@ -1,5 +1,3 @@
-[README.md](https://github.com/user-attachments/files/34193079/README.md)
-[README.md](https://github.com/user-attachments/files/34058034/README.md)
 # dsh-nx
 
 **Siemens NX 插件 · DeepSeek Harness 侧栏工作台**
@@ -121,7 +119,6 @@ nx_tube            # 管道
 nx_rib             # 轮廓筋
 nx_pattern_feature # 特征阵列
 nx_csys            # 基准坐标系
-nx_motion_open     # 打开运动仿真件
 nx_python          # 执行 NXOpen Python 代码
 ```
 
