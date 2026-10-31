@@ -10,6 +10,7 @@
     "./client": "./dsh-nx/client.js"
   },
   "files": [
+    "LICENSE",
     "dsh-nx"
   ],
   "engines": {
@@ -31,5 +32,6 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.1-rc.1 <4.1.0-0 || >=4.1.0-rc.1 <5.0.0-0",
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0"
-  }
+  },
+  "license": "MIT"
 }
