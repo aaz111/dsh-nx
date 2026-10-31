@@ -151,7 +151,25 @@ nx_fea_solid（mesh=draped, loads=pressure+force）→ 查看云图
 
 ---
 
-## 三、免责声明
+## 三、安全说明
+
+通用安全扫描器会把本插件标出若干项。它们全部是本机行为：插件不访问外网、不收集数据、不上传任何文件。逐条对应如下：
+
+| 扫描项 | 实际行为 | 能否关闭 |
+|---|---|---|
+| 执行动态代码（exec） | nx_python 工具在 NX 进程内执行调用方给的 NXOpen Python，是插件唯一执行外部代码的入口 | 设 DSH_NX_ALLOW_PYTHON=0 后该工具直接拒绝 |
+| child_process 调 taskkill | 只用于结束本插件自己启动的 NX worker 进程树 | 不可关 |
+| child_process 启动 run_journal.exe | 启动 NX 自带的 NXBIN 目录下的 run_journal.exe 运行 nxworker.py，这是与 NX 通信的唯一方式 | 不可关 |
+| 文件系统写入 | 向 .dsh-nx/bridge 下的 req 与 resp 目录写 JSON 请求、响应（文件队列协议） | 不可关 |
+| fetch | 侧栏面板在浏览器与 DSH 本机服务之间请求 state 与 action 两个端点，不指向外网 | 不可关 |
+| process.env 读取 | 读 UGII_BASE_DIR、DSH_NX_OUT、NXBRIDGE_* 等路径，并传给 worker | 不可关 |
+
+收紧方式：
+
+1. 不需要跑任意 Python 时，在启动 DSH 前设环境变量 DSH_NX_ALLOW_PYTHON=0；
+2. 只需要只读能力时，用 panel: false 关掉侧栏面板。
+
+## 四、免责声明
 
 1. **本插件是第三方工具**，非 Siemens 官方产品。NXOpen API 的行为可能随 NX 版本更新而变化，本插件在 **NX 2512** 上测试通过，其他版本未经验证。
 

@@ -929,6 +929,13 @@ def main():
         return part_info(part)
 
     def cmd_exec(args):
+        # Escape hatch: the only place the worker evaluates caller-supplied code,
+        # and the only thing a static scanner flags as arbitrary execution.
+        # Set DSH_NX_ALLOW_PYTHON=0 to refuse every nx_python call.
+        allow = os.environ.get("DSH_NX_ALLOW_PYTHON", "1").strip().lower()
+        if allow in ("0", "false", "no", "off"):
+            raise RuntimeError("nx_python is disabled (DSH_NX_ALLOW_PYTHON=%s); "
+                               "set it to 1 or unset it to allow the escape hatch" % allow)
         part = state["part"]
         env = {"NXOpen": NXOpen, "NX": NX, "s": s, "w": out, "os": os, "json": json, "part": part}
         code = args.get("code") or ""
