@@ -212,7 +212,8 @@ def main():
                 views.append({
                     "name": fix_text(v.Name),
                     "kind": type(v).__name__,
-                    "scale": float(v.Scale),
+                    "scale": round(true_scale(v), 4),
+                    "internalScale": round(float(v.Scale), 4),
                 })
         except Exception as e:
             out("sheet views failed:", repr(e))
@@ -455,6 +456,16 @@ def main():
         # PDF print would hand back a white page.
         reuse = args.get("reuse", True)
         scale = args.get("scale") or [1.0, 1.0]
+        # Sheet scale (the `scale` pair above) and view scale are different things: the pair is
+        # what InsertSheet stores, this one is the ratio the views are drawn at.
+        view_ratio = args.get("viewScale")
+        if view_ratio is None:
+            view_ratio = args.get("view_scale")
+        layout_hint = None
+        if view_ratio is not None:
+            view_ratio = ratio_value(view_ratio)
+            # The wizard's auto-scale owns the ratio, so an explicit one has to use our layout.
+            layout_hint = "fitted"
 
         if reuse:
             paper = SHEET_SIZES.get(size)
@@ -499,7 +510,17 @@ def main():
                     out("template produced no sheet, falling back to InsertSheet")
         if sheet is None:
             sheet_size = getattr(NX.Drawings.DrawingSheetStandardSheetSize, size)
-            name = args.get("sheetName") or "SH1"
+            name = str(args.get("sheetName") or "SH1")
+            # A second call with the same name used to abort the whole drawing; bump instead.
+            taken = {fix_text(sh.Name).lower() for sh in list(part.DraftingDrawingSheets)}
+            if name.lower() in taken:
+                # Suffix rather than increment: "SH_A3" carries the paper size, so turning it
+                # into "SH_A4" would rename the page instead of de-duplicating it.
+                index = 2
+                while ("%s_%d" % (name, index)).lower() in taken:
+                    index += 1
+                name = "%s_%d" % (name, index)
+                out("sheet name taken, using:", name)
             sheet = part.DraftingDrawingSheets.InsertSheet(
                 name, sheet_size, float(scale[0]), float(scale[1]), angle)
             out("inserted sheet:", repr(sheet))
@@ -508,7 +529,7 @@ def main():
         # 0.83 on an A3 and the outer views hang off the paper, and views cannot be deleted again.
         # So the default is our own layout, computed from the part's bounding box; the wizard is
         # only used when the caller asks for it (layout: "wizard").
-        layout = str(args.get("layout") or "fitted").lower()
+        layout = layout_hint or str(args.get("layout") or "fitted").lower()
         created = []
         plan_ok = False
         if layout == "wizard":
@@ -573,12 +594,18 @@ def main():
                 # small enough for the usual fixture-sized part rather than filling the sheet.
                 fit = 0.4
             ratio = 1.0
-            for candidate in (1.0, 0.5, 0.4, 0.25, 0.2, 0.1, 0.05, 0.02, 0.01):
+            # 1.0 -> 0.5 used to be a single step, which is how a part ended up at 0.334 on a
+            # sheet that had room for 0.75: the table now carries the half and quarter steps.
+            for candidate in (2.0, 1.5, 1.0, 0.75, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1,
+                              0.05, 0.02, 0.01):
                 if candidate <= fit:
                     ratio = candidate
                     break
             else:
                 ratio = 0.01
+            if view_ratio is not None:
+                ratio = view_ratio
+                out("view scale pinned to %g by the caller" % ratio)
             out("fallback scale: 1:%g (part %gx%g mm on %s)" % (
                 1.0 / ratio if ratio else 1, width, height, size))
             model_views = {}
@@ -588,8 +615,22 @@ def main():
             except Exception:
                 model_views = {}
             grid = {"FRONT": (0.30, 0.66), "TOP": (0.30, 0.30),
-                    "RIGHT": (0.71, 0.68), "ISOMETRIC": (0.74, 0.29)}
-            wanted = [("FRONT", 0), ("TOP", 1), ("RIGHT", 2), ("ISOMETRIC", 3)]
+                    "RIGHT": (0.71, 0.68), "ISOMETRIC": (0.74, 0.29),
+                    "LEFT": (0.72, 0.36), "BACK": (0.30, 0.48),
+                    "BOTTOM": (0.52, 0.12), "TRIMETRIC": (0.72, 0.12)}
+            # Only the views the caller named; the old build ignored `views` here and always
+            # produced the same four.
+            flags = args.get("views") or {}
+            order = [("front", "FRONT"), ("top", "TOP"), ("right", "RIGHT"), ("left", "LEFT"),
+                     ("back", "BACK"), ("bottom", "BOTTOM"), ("isometric", "ISOMETRIC"),
+                     ("trimetric", "TRIMETRIC")]
+            if flags:
+                wanted = [(name, slot) for slot, (key, name) in enumerate(order) if flags.get(key)]
+                if not wanted:
+                    raise RuntimeError("views was given but no known name was set true (known: %s)"
+                                       % ", ".join(k for k, _ in order))
+            else:
+                wanted = [("FRONT", 0), ("TOP", 1), ("RIGHT", 2), ("ISOMETRIC", 3)]
             placed = []
             for index, (name, slot) in enumerate(wanted):
                 mv = model_views.get(name)
@@ -600,8 +641,10 @@ def main():
                     builder.SelectModelView.SelectedView = mv
                     builder.Scale.ScaleType = NX.Drawings.ViewScaleBuilderType.Ratio
                     # An isometric view looks bigger than its plan on paper; keep it inside its
-                    # quadrant instead of letting it run over the plan view.
-                    builder.Scale.Numerator = float(ratio * (0.78 if name == "ISOMETRIC" else 1.0))
+                    # quadrant instead of letting it run over the plan view. An explicit ratio
+                    # from the caller is used as given.
+                    shrink = 0.78 if (name == "ISOMETRIC" and view_ratio is None) else 1.0
+                    builder.Scale.Numerator = float(ratio * shrink)
                     builder.Scale.Denominator = 1.0
                     spot = grid.get(name, (0.30, 0.66))
                     builder.Placement.Placement.Value = part.Points.CreatePoint(
@@ -613,6 +656,16 @@ def main():
                     out("base view failed:", name, repr(e))
             created = [v for v in sheet.GetDraftingViews() if view_summary(v)["visible"] > 0]
             out("explicit base views:", ", ".join(placed))
+
+        # Views come out of the builder wherever the template happens to put them; grid them
+        # from their own frames so the sheet is filled evenly and the title block stays clear.
+        if created and str(args.get("layout") or "").lower() not in ("none", "keep"):
+            try:
+                reserve = args.get("reserveTitle")
+                auto_layout_views(sheet, created,
+                                  reserve=True if reserve is None else bool(reserve))
+            except Exception as e:
+                out("auto layout skipped:", repr(e))
 
         info = {"sheet": sheet_info(part.DraftingDrawingSheets.CurrentDrawingSheet),
                 "sheets": sheet_list(part),
@@ -748,7 +801,7 @@ def main():
             ox, oy = float(view.Origin.X), float(view.Origin.Y)
         except Exception:
             ox = oy = 0.0
-        return float(ref.X), float(ref.Y), float(view.Scale), ox, oy
+        return float(ref.X), float(ref.Y), true_scale(view), ox, oy
 
     def sheet_of(view, x, y):
         rx, ry, scale, ox, oy = view_frame(view)
@@ -781,7 +834,9 @@ def main():
         return {
             "name": fix_text(view.Name),
             "kind": type(view).__name__,
-            "scale": float(view.Scale),
+            # view.Scale is an internal ratio (0.83 on a 1:1 view); the real one comes from UF.
+            "scale": round(true_scale(view), 4),
+            "internalScale": round(float(view.Scale), 4),
             "sheetPoint": [round(float(view.GetDrawingReferencePoint().X), 2),
                            round(float(view.GetDrawingReferencePoint().Y), 2)],
             "visible": len(list(view.AskVisibleObjects())),
@@ -886,6 +941,302 @@ def main():
                 "ratio": ratio, "boundary": [[round(cx, 2), round(cy, 2)],
                                              [round(second[0], 2), round(second[1], 2)]],
                 "at": [round(float(at[0]), 2), round(float(at[1]), 2)]}
+
+    # ---------------------------------------------------------------- view and sheet control
+    # view.Scale is an internal number (0.834 on a 1:1 view), so every ratio that has to be
+    # read back or recomputed goes through UF_DRAW_ask_view_scale instead.
+    def uf_session():
+        import NXOpen.UF as UFLIB
+        return UFLIB.UFSession.GetUFSession()
+
+    def ratio_value(value):
+        """1:2 / 0.5 / {"num":1,"den":2} -> 0.5"""
+        if isinstance(value, dict):
+            num = float(value.get("num") or value.get("numerator") or 1.0)
+            den = float(value.get("den") or value.get("denominator") or 1.0)
+            return num / den if den else 1.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip()
+        if ":" in text:
+            head, tail = text.split(":", 1)
+            num, den = float(head), float(tail)
+            return num / den if den else 1.0
+        return float(text)
+
+    def true_scale(view):
+        try:
+            return float(uf_session().Draw.AskViewScale(view.Tag)[1])
+        except Exception:
+            return float(view.Scale)
+
+    # Standard slots for the named modelling views. Clustering the views by where the builder
+    # happened to drop them looked reasonable but mis-grouped rows whose centres differed by a
+    # few millimetres, so the slot comes from the view name instead.
+    VIEW_SLOTS = {"FRONT": (0, 0), "TOP": (0, 1), "BOTTOM": (0, 2),
+                  "RIGHT": (1, 0), "BACK": (2, 0), "LEFT": (1, 1),
+                  "ISOMETRIC": (2, 0), "TRIMETRIC": (2, 1), "DIMETRIC": (2, 1)}
+
+    def auto_layout_views(sheet, views, reserve=True, gap=14.0, pad=8.0):
+        """Re-place the created views on a grid built from their own frames.
+
+        The slot of each view comes from its name (FRONT / TOP / RIGHT / ISOMETRIC ...), the
+        column width and row height from the largest frame in that band, and the whole block is
+        centred on the free area. When the title block (plus a bill of materials above it) sits
+        in the bottom-right corner the block is lifted and the layout retried until nothing
+        overlaps it.
+        """
+        uf = uf_session()
+        frames, slots = {}, {}
+        for view in views:
+            border = uf.Draw.AskViewBorders(view.Tag)
+            frames[view.Name] = [float(border[0]), float(border[1]),
+                                 float(border[2]), float(border[3])]
+            key = str(view.Name).split("@")[0].upper()
+            slots[view.Name] = VIEW_SLOTS.get(key)
+        if not frames:
+            return {}
+        # Views without a known slot (section views, details) go to the first free cell.
+        taken = {s for s in slots.values() if s}
+        spare = [(1, 1), (2, 1), (1, 2), (2, 2), (0, 3), (1, 3)]
+        for view in views:
+            if slots[view.Name] is None:
+                for cell in spare:
+                    if cell not in taken:
+                        slots[view.Name] = cell
+                        taken.add(cell)
+                        break
+                else:
+                    slots[view.Name] = (len(taken) % 3, len(taken) // 3)
+
+        col_ids = sorted({slots[v.Name][0] for v in views})
+        row_ids = sorted({slots[v.Name][1] for v in views})
+        col_of = {v.Name: col_ids.index(slots[v.Name][0]) for v in views}
+        row_of = {v.Name: row_ids.index(slots[v.Name][1]) for v in views}
+
+        col_w = [0.0] * len(col_ids)
+        row_h = [0.0] * len(row_ids)
+        for view in views:
+            box = frames[view.Name]
+            col_w[col_of[view.Name]] = max(col_w[col_of[view.Name]], box[2] - box[0])
+            row_h[row_of[view.Name]] = max(row_h[row_of[view.Name]], box[3] - box[1])
+
+        total_w = sum(col_w) + gap * (len(col_w) - 1)
+        total_h = sum(row_h) + gap * (len(row_h) - 1)
+
+        width = float(sheet.Length)
+        height = float(sheet.Height)
+        binding = 25.0
+        margin = 10.0 if width > 500.0 else 5.0
+        free_x0, free_x1 = binding + pad, width - margin - pad
+        free_y0, free_y1 = margin + pad, height - margin - pad
+        room_w, room_h = free_x1 - free_x0, free_y1 - free_y0
+        if total_w > room_w or total_h > room_h:
+            out("auto layout: %.0fx%.0f block does not fit %.0fx%.0f free area, keeping it inset"
+                % (total_w, total_h, room_w, room_h))
+
+        left = free_x0 + max(0.0, room_w - total_w) / 2.0
+        top = free_y1 - max(0.0, room_h - total_h) / 2.0
+
+        block_x0 = width - margin - 180.0 if reserve else free_x1 + 1.0
+        block_y1 = free_y0 + 156.0
+
+        def offsets(shift):
+            xs, x = [], left
+            for column in col_w:
+                xs.append(x + column / 2.0)
+                x += column + gap
+            ys, y = [], top + shift
+            for band in row_h:
+                ys.append(y - band / 2.0)
+                y -= band + gap
+            return xs, ys
+
+        def clashes(shift):
+            xs, ys = offsets(shift)
+            for view in views:
+                box = frames[view.Name]
+                half_w = (box[2] - box[0]) / 2.0
+                half_h = (box[3] - box[1]) / 2.0
+                cx, cy = xs[col_of[view.Name]], ys[row_of[view.Name]]
+                x0, x1 = cx - half_w, cx + half_w
+                y0, y1 = cy - half_h, cy + half_h
+                if x1 > block_x0 and y0 < block_y1:
+                    return True
+                if y1 > free_y1 or y0 < free_y0 or x0 < free_x0 or x1 > free_x1:
+                    return True
+            return False
+
+        shift = 0.0
+        for step in (0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0):
+            if not clashes(step):
+                shift = step
+                break
+        else:
+            shift = 0.0
+
+        xs, ys = offsets(shift)
+        placed = {}
+        for view in views:
+            x, y = xs[col_of[view.Name]], ys[row_of[view.Name]]
+            view.MoveView(NX.Point3d(x, y, 0.0))
+            placed[view.Name] = [round(x, 2), round(y, 2)]
+        out("auto layout on %gx%g sheet: %d view(s), %d column(s) x %d row(s), shift %g"
+            % (width, height, len(views), len(col_ids), len(row_ids), shift))
+        return placed
+
+    def cmd_view_scale(args):
+        part = display_part()
+        view = pick_view(part, args.get("view"))
+        raw_scale = args.get("scale")
+        if raw_scale is None:
+            # The tool schema splits this into a number (`scale`) and a ratio string (`ratio`);
+            # accept either, otherwise "1:2" through `ratio` was rejected as missing.
+            raw_scale = args.get("ratio")
+        if raw_scale is None:
+            raise RuntimeError("scale is required — a ratio like 2, 1.5 or \"1:2\"")
+        ratio = ratio_value(raw_scale)
+        if ratio <= 0:
+            raise RuntimeError("scale must be positive, got %r" % (raw_scale,))
+        before = true_scale(view)
+        uf_session().Draw.SetViewScale(view.Tag, float(ratio))
+        after = true_scale(view)
+        # Drawn size on the sheet, so the caller can see the effect without opening NX.
+        box = None
+        try:
+            b = uf_session().Draw.AskViewBorders(view.Tag)
+            box = [round(float(b[0]), 2), round(float(b[1]), 2),
+                   round(float(b[2]), 2), round(float(b[3]), 2)]
+        except Exception:
+            pass
+        return {"view": fix_text(view.Name), "requested": round(ratio, 4),
+                "before": round(before, 4), "scale": round(after, 4),
+                "border": box, "visible": len(list(view.AskVisibleObjects()))}
+
+    def cmd_view_move(args):
+        part = display_part()
+        view = pick_view(part, args.get("view"))
+        at = args.get("at") or args.get("to")
+        if not at or len(at) < 2:
+            raise RuntimeError("at [x,y] is the new view centre on the sheet, e.g. [320,140]")
+        before = view.GetDrawingReferencePoint()
+        from_before = [round(float(before.X), 2), round(float(before.Y), 2)]
+        view.MoveView(NX.Point3d(float(at[0]), float(at[1]), 0.0))
+        after = view.GetDrawingReferencePoint()
+        return {"view": fix_text(view.Name), "requested": [round(float(at[0]), 2), round(float(at[1]), 2)],
+                "before": from_before,
+                "sheetPoint": [round(float(after.X), 2), round(float(after.Y), 2)],
+                "scale": round(true_scale(view), 4)}
+
+    def cmd_sheet_delete(args):
+        part = display_part()
+        sheets = list(part.DraftingDrawingSheets)
+        if not sheets:
+            raise RuntimeError("the part has no drawing sheets")
+        names = ", ".join(fix_text(x.Name) for x in sheets)
+        wanted = args.get("name") or args.get("sheet")
+        if wanted:
+            key = str(wanted).strip().lower()
+            target = None
+            for candidate in sheets:
+                if fix_text(candidate.Name).lower() == key:
+                    target = candidate
+                    break
+            if target is None:
+                raise RuntimeError("no sheet named %r (sheets: %s)" % (wanted, names))
+        else:
+            if len(sheets) <= 1:
+                raise RuntimeError("refusing to delete the only sheet (%s)" % names)
+            target = sheets[-1]
+        if len(sheets) <= 1:
+            raise RuntimeError("refusing to delete the only sheet (%s)" % names)
+        gone = fix_text(target.Name)
+        uf_session().Draw.DeleteDrawing(target.Tag)
+        left = [fix_text(x.Name) for x in list(part.DraftingDrawingSheets)]
+        return {"deleted": gone, "sheets": left}
+
+    def cmd_section_vertical(args):
+        """A vertical cut, which the SectionViewBuilder path refuses ("Invalid hinge line").
+
+        UF_DRAW_create_simple_sxview takes the cut position as a *drawing* point and works out
+        the model plane from it, so the point has to be placed inside the parent view's frame —
+        when it is not, NX still commits the view and hands back an empty frame with no error.
+        """
+        part = display_part()
+        parent = pick_view(part, args.get("parent"))
+        sheet = part.DraftingDrawingSheets.CurrentDrawingSheet
+        if sheet is None:
+            raise RuntimeError("the part has no drawing sheet — run nx_drawing first")
+        cut = args.get("cutX", args.get("cut_x"))
+        if cut is None:
+            raise RuntimeError("cutX is the model X the cut plane sits at, e.g. -70")
+        cut = float(cut)
+        scale = args.get("scale")
+        scale = true_scale(parent) if scale is None else ratio_value(scale)
+        at = args.get("at") or list(free_spot(part))
+        at = (float(at[0]), float(at[1]))
+
+        # Model X of the parent view's centre, so the cut point can be placed on the sheet.
+        centre_x = 0.0
+        try:
+            box = measure(part)
+            lo = box.get("bboxMin") or [0.0, 0.0, 0.0]
+            size = box.get("bboxSize") or [0.0, 0.0, 0.0]
+            centre_x = float(lo[0]) + float(size[0]) / 2.0
+        except Exception:
+            pass
+        ref = parent.GetDrawingReferencePoint()
+        rx, ry = float(ref.X), float(ref.Y)
+        px = rx + (cut - centre_x) * scale
+        py = ry
+        inside = True
+        box_on_sheet = None
+        try:
+            b = uf_session().Draw.AskViewBorders(parent.Tag)
+            box_on_sheet = [round(float(b[i]), 2) for i in range(4)]
+            inside = (float(b[0]) <= px <= float(b[2])) and (float(b[1]) <= py <= float(b[3]))
+        except Exception:
+            pass
+        if not inside:
+            raise RuntimeError(
+                "the cut point (%.1f, %.1f) lands outside %s (frame %s); NX would return an "
+                "empty section view without an error — pick a cutX closer to the part or a "
+                "parent view that covers it"
+                % (px, py, fix_text(parent.Name),
+                   "unknown" if box_on_sheet is None else box_on_sheet))
+
+        import NXOpen.UF as UFLIB
+        cut_obj = UFLIB.DrfObject_Struct()
+        cut_obj.ObjectAssocType = UFLIB.DrfAssocType.DWG_POS
+        cut_obj.AssocDwgPos = [px, py]
+
+        step_dir = args.get("stepDir") or [0.0, 1.0, 0.0]
+        arrow_dir = args.get("arrowDir") or [-1.0, 0.0, 0.0]
+        known = {v.Tag for v in drafting_views(part)}
+        tag = uf_session().Draw.CreateSimpleSxview(
+            sheet.Tag, float(scale),
+            [float(v) for v in step_dir], [float(v) for v in arrow_dir],
+            parent.Tag, cut_obj, [at[0], at[1]])
+        fresh = [v for v in drafting_views(part) if v.Tag not in known]
+        if not fresh:
+            raise RuntimeError("CreateSimpleSxview returned tag %r but no new view appeared" % (tag,))
+        view = fresh[-1]
+        visible = len(list(view.AskVisibleObjects()))
+        if visible < 5:
+            raise RuntimeError(
+                "the section view came out empty (%d visible object(s)) — the cut point "
+                "(%.1f, %.1f) misses the model; move it with cutX" % (visible, px, py))
+        # The section lands at `at`; grid the whole sheet again so it joins the layout instead
+        # of sitting wherever the caller guessed. Pass layout:"none" to keep manual placement.
+        if str(args.get("layout") or "").lower() not in ("none", "keep"):
+            try:
+                auto_layout_views(sheet, list(sheet.GetDraftingViews()))
+            except Exception as e:
+                out("auto layout after section skipped:", repr(e))
+        return {"view": view_summary(view), "parent": fix_text(parent.Name),
+                "cutX": cut, "cutPoint": [round(px, 2), round(py, 2)],
+                "parentFrame": box_on_sheet, "scale": round(scale, 4),
+                "at": [round(at[0], 2), round(at[1], 2)], "visible": visible}
 
     def cmd_note(args):
         part = display_part()
@@ -2103,21 +2454,50 @@ def main():
         tb_x1, tb_y0 = x1, y0
         tb_x0 = tb_x1 - tb_width
         tb_y1 = tb_y0 + tb_height
+        # GB/T 10609.1-2008 title block: laid out on the standard 180 x 56 grid and scaled to
+        # whatever block size the sheet allows, so A4 and A2 keep the same proportions.
+        # Columns: 更改区(0-90) | 材料/阶段/重量/比例(90-110) | 名称区(110-180)
+        sx = tb_width / 180.0
+        sy = tb_height / 56.0
+
+        def X(value):
+            return tb_x0 + value * sx
+
+        def Y(value):
+            return tb_y0 + value * sy
+
+        def h(y, xa, xb):
+            seg(X(xa), Y(y), X(xb), Y(y))
+
+        def v(x, ya, yb):
+            seg(X(x), Y(ya), X(x), Y(yb))
+
         box(tb_x0, tb_y0, tb_x1, tb_y1)
 
-        rows, cols = 4, 4
-        row_h = tb_height / rows
-        col_w = tb_width / cols
-        for i in range(1, rows):
-            seg(tb_x0, tb_y0 + row_h * i, tb_x1, tb_y0 + row_h * i)
-        for i in range(1, cols):
-            for r in range(rows):
-                seg(tb_x0 + col_w * i, tb_y0 + row_h * r,
-                    tb_x0 + col_w * i, tb_y0 + row_h * (r + 1))
+        # 更改区（上，4 行）
+        for y in (28.0, 35.0, 42.0, 49.0):
+            h(y, 0.0, 90.0)
+        for x in (12.0, 24.0, 36.0, 65.0):
+            v(x, 28.0, 56.0)
+        v(76.0, 49.0, 56.0)
+        # 签名区（下，4 行：设计 / 审核 / 工艺 / 批准）
+        for y in (7.0, 14.0, 21.0):
+            h(y, 0.0, 90.0)
+        for x in (24.0, 56.0):
+            v(x, 0.0, 28.0)
+        v(90.0, 0.0, 56.0)
+        # 中列：材料标记 / 阶段标记 / 重量 / 比例
+        for y in (14.0, 28.0, 42.0):
+            h(y, 90.0, 110.0)
+        v(110.0, 0.0, 56.0)
+        # 名称区：单位名称 / 图样名称 / 图样代号
+        for y in (21.0, 42.0):
+            h(y, 110.0, 180.0)
 
         written = [0]
 
-        def cell(text, col, row, size=3.0):
+        def label(text, x, y, size=3.0):
+            """One drafting note, origin at grid point (x, y) of the 180 x 56 block."""
             text = str(text or "").strip()
             if not text:
                 return
@@ -2132,24 +2512,39 @@ def main():
                 note.Style.LetteringStyle.GeneralTextSize = float(size)
             except Exception as error:
                 out("title text size not set:", repr(error))
-            note.Origin.OriginPoint = pnt(tb_x0 + col_w * col + 1.2,
-                                          tb_y0 + row_h * row + row_h * 0.32, 0.0)
+            note.Origin.OriginPoint = pnt(X(x) + 1.0 * sx, Y(y) + 1.0 * sy, 0.0)
             note.Commit()
             written[0] += 1
 
-        cell(part_name, 0, 3)
-        cell("材料 " + material, 2, 3)
-        cell("比例 " + scale, 3, 3)
-        if drawing_no:
-            cell("图号 " + drawing_no, 0, 2)
-        if designer:
-            cell("设计 " + designer, 2, 2)
-        if checker:
-            cell("审核 " + checker, 3, 2)
-        cell("日期 " + date, 0, 1)
-        if company:
-            cell("单位 " + company, 2, 1)
-        cell(company or part_name, 0, 0, size=4.0)
+        # 更改区表头
+        label("标记", 1.0, 51.5, 2.5)
+        label("处数", 13.0, 51.5, 2.5)
+        label("分区", 25.0, 51.5, 2.5)
+        label("更改文件号", 37.0, 51.5, 2.5)
+        label("签名", 66.0, 51.5, 2.5)
+        label("年.月.日", 76.5, 51.5, 2.5)
+        # 签名行：设计(顶) / 审核 / 工艺 / 批准(底)
+        for row, (role, who) in enumerate((("设计", designer), ("审核", checker),
+                                           ("工艺", ""), ("批准", ""))):
+            base = 21.0 - row * 7.0
+            label(role, 1.0, base + 2.2, 2.5)
+            label(who, 25.0, base + 2.2, 3.0)
+            if row < 2:
+                label(date, 57.0, base + 2.2, 2.5)
+        # 张次落在批准行的日期格
+        label("共 1 张  第 1 张", 57.0, 2.2, 2.5)
+        # 中列：材料标记 / 阶段标记 / 重量 / 比例（标签贴格顶，数值在下）
+        label("材料标记", 91.0, 49.0, 2.2)
+        label(material, 91.0, 44.0, 3.5)
+        label("阶段标记", 91.0, 35.0, 2.2)
+        label("重量", 91.0, 21.0, 2.2)
+        label(str(args.get("weight") or ""), 91.0, 16.0, 3.0)
+        label("比例", 91.0, 7.0, 2.2)
+        label(scale, 91.0, 3.2, 3.2)
+        # 名称区
+        label(company, 111.0, 46.0, 3.0)
+        label(part_name, 111.0, 26.0, 4.5)
+        label(drawing_no, 111.0, 6.0, 4.5)
 
         if not was_active:
             sheet.ResetActiveForSketching()
@@ -3682,7 +4077,19 @@ def main():
                     count = len(list(prototype.Bodies))
                 except Exception:
                     count = 0
-            row = {"name": component_label(component), "file": path or None, "bodies": count}
+            material = ""
+            if prototype is not None:
+                # GB 明细栏有「材料」列：读零件的 MATERIAL / 材料 属性，没有就留空。
+                for attribute in ("MATERIAL", "材料", "Material"):
+                    try:
+                        value = prototype.GetStringAttribute(attribute)
+                    except Exception:
+                        value = None
+                    if value:
+                        material = fix_text(value)
+                        break
+            row = {"name": component_label(component), "file": path or None,
+                   "bodies": count, "material": material}
             if not fast and prototype is not None:
                 try:
                     # A component of a big assembly is only partially loaded, so its
@@ -3716,16 +4123,20 @@ def main():
     # Column catalogue: id -> (中文表头, English header, width mm). The panel lets the user tick
     # which of these go on the sheet and switch the header language, so the table is not fixed to
     # one layout any more.
+    # GB/T 10609.2-1989 明细栏：序号 / 代号 / 名称 / 数量 / 材料 / 单件重量 / 总计 / 备注,
+    # 列宽合计 180 mm，与 GB/T 10609.1 标题栏同宽。
     BOM_FIELDS = {
-        "no": ("序号", "No.", 12.0),
-        "part": ("零件号", "Part No.", 58.0),
-        "name": ("名称", "Name", 38.0),
-        "qty": ("数量", "Qty", 14.0),
-        "unit": ("单重 kg", "Unit kg", 24.0),
-        "total": ("总重 kg", "Total kg", 24.0),
+        "no": ("序号", "No.", 10.0),
+        "part": ("代号", "Part No.", 28.0),
+        "name": ("名称", "Name", 60.0),
+        "qty": ("数量", "Qty", 10.0),
+        "material": ("材料", "Material", 24.0),
+        "unit": ("单件重量", "Unit wt", 18.0),
+        "total": ("总计", "Total", 16.0),
+        "note": ("备注", "Remarks", 14.0),
         "volume": ("体积 mm3", "Vol mm3", 28.0),
     }
-    BOM_ORDER = ("no", "part", "name", "qty", "unit", "total")
+    BOM_ORDER = ("no", "part", "name", "qty", "material", "unit", "total", "note")
     BOM_SUMS = ("qty", "unit", "total", "volume")
 
     def bom_columns(spec, language):
@@ -3919,13 +4330,13 @@ def main():
             put(label, cursor, width, header_bottom, header_height)
             cursor += width
 
-        # data rows, bottom-up so row 1 sits under the header
+        # data rows, top-down: GB/T 10609.2 fills 序号 1 at the bottom, next to 合计
         total_mass = 0.0
         total_quantity = 0
         total_volume = 0.0
-        for index, row in enumerate(reversed(groups)):
+        for index, row in enumerate(groups):
             bottom = y0 + total_height + index * row_height
-            number = data_rows - index
+            number = index + 1
             leaf = os.path.splitext(os.path.basename(str(row.get("file") or "")))[0] or "-"
             quantity = int(row.get("quantity") or 0)
             mass = float(row.get("mass") or 0.0)
@@ -3935,12 +4346,15 @@ def main():
             total_volume += volume
             unit = mass / quantity if quantity else 0.0
             label = str(row.get("name") or "")
-            if label.upper() == leaf.upper():
-                label = ""          # the component name would only repeat 零件号
+            # 代号列放文件名，名称列放中文名；两者相同时也照填（GB 明细栏两列都要有内容）
             mark = "*" if row.get("massEstimated") else ""
-            cells_by_id = {"no": str(number), "part": leaf, "name": label,
-                           "qty": str(quantity), "unit": "%.4f%s" % (unit, mark),
+            part_file = os.path.basename(str(row.get("file") or "")) or leaf
+            cells_by_id = {"no": str(number), "part": part_file, "name": label,
+                           "qty": str(quantity),
+                           "material": str(row.get("material") or ""),
+                           "unit": "%.4f%s" % (unit, mark),
                            "total": "%.4f%s" % (mass, mark),
+                           "note": str(row.get("note") or ""),
                            "volume": "%.1f" % volume}
             cursor = x0
             for (key, _, width) in columns:
@@ -4986,6 +5400,10 @@ def main():
         "pdf": cmd_pdf,
         "annotate": cmd_annotate,
         "section_view": cmd_section_view,
+        "view_scale": cmd_view_scale,
+        "view_move": cmd_view_move,
+        "sheet_delete": cmd_sheet_delete,
+        "section_vertical": cmd_section_vertical,
         "detail_view": cmd_detail_view,
         "note": cmd_note,
         "whoami": cmd_whoami,

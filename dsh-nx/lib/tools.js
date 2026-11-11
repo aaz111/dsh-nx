@@ -1384,6 +1384,99 @@ export function createNxTools(bridge) {
   }));
 
   tools.push(make({
+    name: 'nx_view_scale',
+    description:
+      'Set the scale of one drafting view (视图比例). view.SetScale refuses ("View may not be scaled ' +
+      'nor translated") and view.Style.General.Scale is cosmetic only — this goes through ' +
+      'UF_DRAW_set_view_scale, which is the ratio NX actually draws at, and reads it back. ' +
+      'Give scale as a number (2 = 2:1, 0.5 = 1:2) or ratio as text ("1:2").',
+    parameters: {
+      view: { type: 'string', description: 'view name or part of a name (default: the main base view)' },
+      scale: { type: 'number', description: 'ratio as a number: 2 = 2:1, 0.5 = 1:2' },
+      ratio: { type: 'string', description: 'ratio as text, e.g. "1:2" (overrides scale)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('view_scale', {
+      view: args.view,
+      scale: args.ratio !== undefined && args.ratio !== null ? args.ratio : args.scale,
+    }, 90_000),
+    render: (_args, value) => text(
+      `scale ${value.view}: ${value.before} -> ${value.scale}`,
+      value.border
+        ? `frame ${round(value.border[2] - value.border[0], 1)} x ${round(value.border[3] - value.border[1], 1)} mm`
+        : '',
+      `${value.visible ?? 0} visible object(s)`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_view_move',
+    description:
+      'Move a drafting view so its centre sits at at [x, y] on the sheet. Uses ' +
+      'BaseView.MoveView (SetOrigin and SetScale refuse on a view NX placed itself). ' +
+      'Returns the sheet point the view actually landed on.',
+    parameters: {
+      view: { type: 'string', description: 'view name or part of a name (default: the main base view)' },
+      at: { ...POINT_2D, required: true, description: 'new view centre on the sheet [x, y] mm' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('view_move', { view: args.view, at: args.at }, 90_000),
+    render: (_args, value) => text(
+      `view ${value.view}: (${round(value.before?.[0])}, ${round(value.before?.[1])}) -> ` +
+      `(${round(value.sheetPoint?.[0])}, ${round(value.sheetPoint?.[1])}) mm  scale ${value.scale}`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_sheet_delete',
+    description:
+      'Delete a drawing sheet (图纸页) by name. part.DraftingDrawingSheets has no Delete method, ' +
+      'but UF_DRAW_delete_drawing works — this is how a rebuilt sheet replaces the old one instead ' +
+      'of piling up SH1…SH18. Refuses to delete the only sheet left.',
+    parameters: {
+      name: { type: 'string', description: 'sheet name (default: the last sheet)' },
+    },
+    timeoutMs: 120_000,
+    run: (args) => call('sheet_delete', { name: args.name }, 90_000),
+    render: (_args, value) => text(
+      `deleted sheet ${value.deleted}`,
+      `left: ${(value.sheets ?? []).join(', ') || '(none)'}`,
+    ),
+  }));
+
+  tools.push(make({
+    name: 'nx_section_vertical',
+    description:
+      'Vertical section view (竖直剖) — the SectionViewBuilder path refuses these with "Invalid ' +
+      'hinge line", so this goes through UF_DRAW_create_simple_sxview, which takes the cut position ' +
+      'as a DRAWING point. cutX is the model X the cut plane sits at; the tool converts it to a ' +
+      'point inside the parent view and errors out when it would fall outside (NX otherwise ' +
+      'commits an empty frame with no error at all). Produces a hatched Y-Z section.',
+    parameters: {
+      parent: { type: 'string', description: 'view to cut (default: the Front base view)' },
+      cutX: { type: 'number', required: true, description: 'model X of the cut plane, e.g. -70' },
+      at: { ...POINT_2D, description: 'sheet placement of the new view [x, y] mm (default: a free spot)' },
+      scale: { type: 'number', description: 'section view scale (default: the parent view scale)' },
+      stepDir: { ...POINT, description: 'stepped direction, sheet coordinates (default 0,1,0)' },
+      arrowDir: { ...POINT, description: 'viewing direction, sheet coordinates (default -1,0,0 = looking along -X)' },
+    },
+    timeoutMs: 300_000,
+    run: (args) => call('section_vertical', {
+      parent: args.parent,
+      cutX: args.cutX,
+      at: args.at,
+      scale: args.scale,
+      stepDir: args.stepDir,
+      arrowDir: args.arrowDir,
+    }, 240_000),
+    render: (_args, value) => text(
+      `vertical section ${value.view?.name ?? '?'} of ${value.parent ?? '?'}  cut at X=${value.cutX}`,
+      `placed at (${round(value.at?.[0])}, ${round(value.at?.[1])}) mm  scale ${value.scale}`,
+      `${value.visible ?? 0} visible object(s)  cut point (${round(value.cutPoint?.[0])}, ${round(value.cutPoint?.[1])})`,
+    ),
+  }));
+
+  tools.push(make({
     name: 'nx_section_view',
     description:
       'Add a section view (剖视图) to the current drawing sheet: cut the parent view along a line ' +
