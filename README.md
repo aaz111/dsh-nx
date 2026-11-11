@@ -65,7 +65,7 @@
 <img width="671" height="363" alt="image" src="https://github.com/user-attachments/assets/4566a7c7-e2eb-4d96-bbcc-a4b77a86bb26" />
 
 
-<img width="288" height="302" alt="image" src="https://github.com/user-attachments/assets/6c36851b-db2b-464f-803e-d946a3fd3153" />
+<img width="421" height="721" alt="屏幕截图 2026-11-11 203854" src="https://github.com/user-attachments/assets/09bfb039-2a76-46cd-9551-0e4f840d768b" />
 <img width="299" height="267" alt="image" src="https://github.com/user-attachments/assets/129b7654-8a0a-4c68-9a7b-c475eff26a83" />
 
 
