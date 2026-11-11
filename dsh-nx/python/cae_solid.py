@@ -114,7 +114,7 @@ def build_columns(triangles, yc, zc):
     return columns
 
 
-def mesh_solid(triangles, element_size, cap=60000):
+def mesh_solid(triangles, element_size, cap=300000):
     """Voxelise the closed mesh: keep the cells whose centre is inside it."""
     low, high = mesh_box(triangles)
     extent = [high[i] - low[i] for i in range(3)]
@@ -213,6 +213,36 @@ def nodes_on_side(mesh, side, tolerance=None):
             if abs((x, y, z)[axis] - target) <= tol]
 
 
+def nodes_on_cylinder(mesh, spec):
+    """Nodes on the lateral face of a cylinder about a principal axis.
+
+    spec: {"axis": "x"|"y"|"z", "radius": r, "tolerance": tol,
+           "sign": +1|-1 (keep the half where the first lateral coordinate has that sign),
+           "range": [lo, hi] (limits along the axis)}
+    """
+    index = {"x": 0, "y": 1, "z": 2}[str(spec.get("axis") or "y").lower()]
+    radius = float(spec.get("radius") or 0.0)
+    tol = float(spec.get("tolerance") or 0.8)
+    sign = float(spec.get("sign") or 0.0)
+    lo, hi = spec.get("range") or [None, None]
+    others = [i for i in (0, 1, 2) if i != index]
+    lateral_index = {"x": 0, "y": 1, "z": 2}[str(spec.get("lateral") or "x").lower()]
+    picked = []
+    for nid, x, y, z in reference_nodes(mesh):
+        point = (x, y, z)
+        radius_here = math.sqrt(point[others[0]] ** 2 + point[others[1]] ** 2)
+        if abs(radius_here - radius) > tol:
+            continue
+        if sign and sign * point[lateral_index] < -1e-6:
+            continue
+        if lo is not None and point[index] < float(lo) - 1e-6:
+            continue
+        if hi is not None and point[index] > float(hi) + 1e-6:
+            continue
+        picked.append(nid)
+    return picked
+
+
 def quads_on_side(mesh, faces, side):
     axis, which = SIDES[side]
     target = mesh["box"][1][axis] if which else mesh["box"][0][axis]
@@ -259,7 +289,8 @@ def build_loads(mesh, faces, spec):
                 vector = [-v for v in vector]      # pressing on the face pushes inward
             length = math.sqrt(sum(v * v for v in vector)) or 1.0
             vector = [v / length for v in vector]
-            targets = nodes_on_side(mesh, side)
+            targets = (nodes_on_cylinder(mesh, load.get("cylinder"))
+                       if load.get("cylinder") else nodes_on_side(mesh, side))
             if not targets:
                 raise RuntimeError("no node on face %s to apply the force to" % side)
             share = float(load.get("value", 0.0)) / len(targets)

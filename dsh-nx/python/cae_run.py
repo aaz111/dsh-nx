@@ -135,6 +135,8 @@ def fmt(value):
     """
     if not isinstance(value, float):
         return str(value)
+    if abs(value) < 1e-10:
+        return "0."
     text = "%.6g" % value
     if "." not in text and "e" not in text.lower():
         text += "."

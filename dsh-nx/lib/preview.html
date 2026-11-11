@@ -1,0 +1,775 @@
+<!doctype html><meta charset="utf-8"><title>NX 实时预览</title>
+<style>
+html,body{margin:0;height:100%;background:#15171c;overflow:hidden;
+  font:12px/1.5 "Segoe UI",system-ui,sans-serif;color:#9aa4b2;
+  -webkit-user-select:none;user-select:none}
+#c{display:block;width:100%;height:100%;cursor:default}
+#bar{position:fixed;left:0;top:0;right:0;height:28px;display:flex;align-items:center;
+  gap:10px;padding:0 10px;background:linear-gradient(#1b1f26ee,#1b1f2600);pointer-events:none;z-index:5}
+#bar select{pointer-events:auto;background:#222833;color:#c9d1d9;border:1px solid #333c4a;
+  border-radius:4px;font:11px/1 "Segoe UI",sans-serif;padding:2px 4px;outline:none}
+#flatlab{pointer-events:auto;display:flex;align-items:center;gap:4px;font-size:11px;
+  color:#8b949e;cursor:pointer}
+#flatlab input{accent-color:#3fb950;cursor:pointer}
+#dot{width:7px;height:7px;border-radius:50%;background:#3fb950;box-shadow:0 0 6px #3fb950}
+#dot.off{background:#f85149;box-shadow:0 0 6px #f85149}
+
+#info{position:fixed;right:10px;bottom:56px;width:min(214px, 46vw);max-height:46vh;overflow:auto;
+  background:#1b1f26f2;
+  border:1px solid #2b323d;border-radius:8px;padding:9px 11px;z-index:7;
+  box-shadow:0 6px 22px #0008;font-size:11.5px}
+@media (max-width:520px){
+  #info{padding:7px 9px;font-size:10.5px;opacity:.94}
+  #info .v{font-size:10.5px}
+}
+#info.hide{display:none}
+#info h4{margin:0 0 6px;font-size:11.5px;font-weight:600;color:#c9d1d9;letter-spacing:.4px}
+#info .r{display:flex;justify-content:space-between;gap:8px;padding:1.5px 0;color:#8b949e}
+#info .r b{color:#c9d1d9;font-weight:500;font-variant-numeric:tabular-nums;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px}
+#info .r b.nm{max-width:130px}
+#cp{position:absolute;right:8px;top:8px;opacity:.5;cursor:pointer;background:none;
+  border:0;color:#8b949e;font-size:12px;padding:2px}
+#cp:hover{opacity:1}
+
+#lock{position:fixed;right:12px;top:38px;display:flex;flex-direction:column;gap:5px;z-index:6}
+#lock button{width:40px;height:26px;border-radius:5px;cursor:pointer;
+  background:#1b1f26e6;border:1px solid #2b323d;color:#8b949e;
+  font:11px/1 "Segoe UI";letter-spacing:.5px}
+#lock button.on{background:#1f6feb33;border-color:#1f6feb;color:#79c0ff}
+
+#tools{display:flex;flex-wrap:wrap;justify-content:center;gap:3px;padding:4px;
+  background:#1b1f26f2;border:1px solid #2b323d;
+  border-radius:9px;box-shadow:0 6px 22px #0008;max-width:100%;flex-wrap:wrap}
+#tools button{background:none;border:0;border-radius:6px;color:#8b949e;cursor:pointer;
+  font:11.5px/1 "Segoe UI";padding:6px 9px;white-space:nowrap}
+#tools button:hover{background:#262d38;color:#c9d1d9}
+#tools button.on{background:#1f6feb33;color:#79c0ff}
+#tools .sep{width:1px;background:#2b323d;margin:3px 2px}
+
+#hint{position:fixed;left:10px;bottom:8px;opacity:.42;z-index:4;font-size:11px}
+#bottom{position:fixed;left:0;right:0;bottom:8px;display:flex;flex-direction:column;
+  align-items:center;gap:6px;z-index:6;pointer-events:none;padding:0 8px}
+#bottom>*{pointer-events:auto}
+#clip{display:none;align-items:center;gap:8px;padding:5px 10px;background:#1b1f26f2;
+  border:1px solid #2b323d;border-radius:8px;font-size:11.5px;max-width:100%}
+#clip.show{display:flex}
+#clip input{width:min(160px, 34vw);accent-color:#1f6feb}
+</style>
+<canvas id="c"></canvas>
+<div id="bar"><span id="dot"></span><span id="title">等待 NX…</span><span id="stat"></span>
+<select id="qual" title="预览精度（NX 侧重新面片化）">
+  <option value="0.5">草图 0.5mm</option>
+  <option value="0.25">快速 0.25mm</option>
+  <option value="0.12">标准 0.12mm</option>
+  <option value="0.05" selected>精细 0.05mm</option>
+  <option value="0.02">精密 0.02mm</option>
+  <option value="0.01">极精 0.01mm</option>
+</select>
+<label id="flatlab" title="每个三角形独立法向，不做顶点合并 —— 数据量大 3 倍，由 GPU 处理"><input type="checkbox" id="flat"> 平面着色</label></div>
+
+<div id="lock">
+  <button data-lock="free" class="on" title="自由旋转">FREE</button>
+  <button data-lock="0" title="只绕 X 轴旋转">X</button>
+  <button data-lock="1" title="只绕 Y 轴旋转">Y</button>
+  <button data-lock="2" title="只绕 Z 轴旋转">Z</button>
+</div>
+
+<div id="info">
+  <button id="cp" title="复制信息">⧉</button>
+  <h4>基本信息</h4>
+  <div class="r"><span>模型名称</span><b class="nm" id="i-name">—</b></div>
+  <div class="r"><span>体积</span><b id="i-vol">—</b></div>
+  <div class="r"><span>表面积</span><b id="i-area">—</b></div>
+  <div class="r"><span>包围盒</span><b id="i-bbox">—</b></div>
+  <div class="r"><span>三角面</span><b id="i-tris">—</b></div>
+</div>
+
+<div id="bottom">
+<div id="clip"><span>剖切</span><input id="clipv" type="range" min="0" max="1000" value="500"></div>
+<div id="tools">
+  <button id="t-reset" title="相机回到初始视角">回到原点</button>
+  <span class="sep"></span>
+  <button id="t-rot" class="on" title="左键拖动 = 旋转">旋转</button>
+  <button id="t-pan" title="左键拖动 = 平移">平移</button>
+  <span class="sep"></span>
+  <button id="t-clip" title="沿 X / Y / Z 剖切，再点一次换轴，右键关闭">剖切</button>
+  <button id="t-bbox" title="显示包围盒">包围盒</button>
+  <button id="t-wire" title="只画三角形边线">线框</button>
+  <button id="t-alpha" title="半透明">透明</button>
+  <button id="t-outline" title="在实体上叠加深色轮廓线">轮廓线</button>
+  <button id="t-shadow" class="on" title="关掉光照，纯色显示">有阴影</button>
+</div>
+</div>
+
+<div id="hint">左键拖动旋转 · 滚轮缩放 · 右键/Shift+左键平移 · 双击复位</div>
+
+<script>
+const cv = document.getElementById('c');
+let gl = cv.getContext('webgl2', {antialias:true, stencil:true});
+const IS_GL2 = !!gl;
+let STENCIL_BITS = 0; try { STENCIL_BITS = gl.getParameter(gl.STENCIL_BITS) || 0; } catch(e) {}
+if(!gl) gl = cv.getContext('webgl', {antialias:true, stencil:true});
+const IDX_UINT = IS_GL2 || !!gl.getExtension('OES_element_index_uint');
+const IDX_TYPE = IDX_UINT ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+const elTitle = document.getElementById('title'), elStat = document.getElementById('stat'),
+      elDot = document.getElementById('dot');
+
+let prog, buf, ebo, edgeBuf, bboxBuf, quadBuf = null, nIdx = 0, nEdge = 0, bbox = null;
+let uMvp, uMv, uLit, uAlpha, uClip, uView, uIsCap;
+const cam = {rot: rotIdent(), dist: 200, target: [0,0,0], fov: 28};
+const st = { mode:'rotate', lock:-1, wire:false, alpha:false, outline:false,
+             bbox:false, shadow:true, clipAxis:-1, clipVal:0.5 };
+
+function rotIdent(){ return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]); }
+
+const VS = `attribute vec3 p; attribute vec3 n;
+uniform mat4 mvp; uniform mat4 mv; uniform vec4 uClip;
+varying vec3 vn; varying vec3 vp; varying vec3 vmod;
+void main(){ vn = (mv*vec4(n,0.0)).xyz; vp = (mv*vec4(p,1.0)).xyz; vmod = p;
+  gl_Position = mvp*vec4(p,1.0); }`;
+
+const FS = `precision mediump float;
+varying vec3 vn; varying vec3 vp; varying vec3 vmod;
+uniform float uLit; uniform float uAlpha; uniform vec4 uClip;
+uniform float uIsCap;
+void main(){
+  /* 封盖用的平面四边形：一片平色，不参与光照 */
+  if (uIsCap > 1.5) { gl_FragColor = vec4(0.09,0.10,0.12,1.0); return; }
+  if (uIsCap > 0.5) { gl_FragColor = vec4(1.0,1.0,1.0,1.0); return; }
+  if (dot(uClip.xyz, uClip.xyz) > 0.5 && dot(vmod, uClip.xyz) > uClip.w) discard;
+  vec3 N = normalize(vn); vec3 V = normalize(-vp);
+  if (!gl_FrontFacing) N = -N;
+  vec3 L1 = normalize(vec3(0.45,0.65,0.62)); vec3 L2 = normalize(vec3(-0.6,-0.25,0.35));
+  vec3 L3 = normalize(vec3(0.1,-0.75,0.30));
+  float d = max(dot(N,L1),0.0)*0.55 + max(dot(N,L2),0.0)*0.40 + max(dot(N,L3),0.0)*0.30 + 0.42;
+  vec3 base = vec3(0.86,0.62,0.20);
+  vec3 col = mix(base * 0.95, base*d, uLit);
+  gl_FragColor = vec4(col, uAlpha);
+}`;
+
+function sh(t, src){ const s = gl.createShader(t); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+
+function initGL(){
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error('link: ' + gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  uMvp = gl.getUniformLocation(prog,'mvp');
+  uMv = gl.getUniformLocation(prog,'mv');
+  uLit = gl.getUniformLocation(prog,'uLit');
+  uAlpha = gl.getUniformLocation(prog,'uAlpha');
+  uClip = gl.getUniformLocation(prog,'uClip');
+  uIsCap = gl.getUniformLocation(prog,'uIsCap');
+  buf = gl.createBuffer();
+  edgeBuf = gl.createBuffer();
+  bboxBuf = gl.createBuffer();
+  gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+  gl.clearColor(0.082,0.090,0.110,1);
+  gl.uniform1f(uLit, 1.0);
+  gl.uniform1f(uAlpha, 1.0);
+  gl.uniform4f(uClip, 0,0,0, 0);
+}
+
+function mul(a,b){ const o = new Float32Array(16);
+  for(let i=0;i<4;i++) for(let j=0;j<4;j++){ let s=0;
+    for(let k=0;k<4;k++) s += a[k*4+j]*b[i*4+k]; o[i*4+j]=s; } return o; }
+
+function perspective(fovy, asp, n, f){ const t = 1/Math.tan(fovy/2);
+  return new Float32Array([t/asp,0,0,0, 0,t,0,0, 0,0,(f+n)/(n-f),-1, 0,0,2*f*n/(n-f),0]); }
+
+function lookAt(eye, ctr, up){
+  const z0=eye[0]-ctr[0], z1=eye[1]-ctr[1], z2=eye[2]-ctr[2];
+  const zl=Math.hypot(z0,z1,z2)||1; const z=[z0/zl,z1/zl,z2/zl];
+  const x0=up[1]*z[2]-up[2]*z[1], x1=up[2]*z[0]-up[0]*z[2], x2=up[0]*z[1]-up[1]*z[0];
+  const xl=Math.hypot(x0,x1,x2)||1; const x=[x0/xl,x1/xl,x2/xl];
+  const y=[z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
+  return new Float32Array([x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0,
+    -(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]),
+    -(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]),
+    -(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]), 1]);
+}
+
+function rotAxis(axis, a){
+  const c=Math.cos(a), s=Math.sin(a), m=rotIdent();
+  if(axis===0){ m[5]=c; m[6]=s; m[9]=-s; m[10]=c; }
+  else if(axis===1){ m[0]=c; m[2]=-s; m[8]=s; m[10]=c; }
+  else { m[0]=c; m[1]=s; m[4]=-s; m[5]=c; }
+  return m;
+}
+
+/* ================= 剖切封口：CPU 逐三角形求交线 -> 连环 -> 耳切 =================
+   剖切面位置的任何变化都要重算；56k 三角形大约 60~150 ms。 */
+var holeData = null, holeVBO = null, holeDirty = true;
+var meshVs = null, meshIx = null, capData = null, capVBO = null, capDirty = true, capMs = 0;
+
+function buildCap(positions, indices, axis, v) {
+  const EPS = 1e-4;
+  const segs = [];
+  const P3 = (i) => [positions[i*6], positions[i*6+1], positions[i*6+2]];
+
+  for (let t = 0; t < indices.length; t += 3) {
+    const A = P3(indices[t]), B = P3(indices[t+1]), C = P3(indices[t+2]);
+    const da = A[axis]-v, db = B[axis]-v, dc = C[axis]-v;
+    if ((da>EPS&&db>EPS&&dc>EPS) || (da<-EPS&&db<-EPS&&dc<-EPS)) continue;
+    if (Math.abs(da)<EPS && Math.abs(db)<EPS && Math.abs(dc)<EPS) continue; // 整个三角形躺在平面上
+    const pts = [];
+    const cut = (P, Q, dp, dq) => {
+      if ((dp>EPS&&dq>EPS) || (dp<-EPS&&dq<-EPS)) return;
+      if (Math.abs(dp-dq) < 1e-12) return;
+      const s = dp/(dp-dq);
+      pts.push([P[0]+(Q[0]-P[0])*s, P[1]+(Q[1]-P[1])*s, P[2]+(Q[2]-P[2])*s]);
+    };
+    cut(A,B,da,db); cut(B,C,db,dc); cut(C,A,dc,da);
+    const up = [];                       // 顶点恰在平面上时会重复加点，先合并
+    for (const pp of pts) {
+      let dup = false;
+      for (const qq of up) {
+        if (Math.abs(pp[0]-qq[0]) < EPS && Math.abs(pp[1]-qq[1]) < EPS && Math.abs(pp[2]-qq[2]) < EPS) { dup = true; break; }
+      }
+      if (!dup) up.push(pp);
+    }
+    if (up.length === 2) {
+      const a = up[0], b = up[1];
+      const d = Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
+      if (d > EPS) segs.push([a, b]);
+    }
+  }
+  window.__segs = segs.length;
+  const holeOut = [];
+  if (!segs.length) return { cap: [], holes: [] };
+
+  // 端点量化去重
+  const q = (p) => [Math.round(p[0]*1e3)/1e3, Math.round(p[1]*1e3)/1e3, Math.round(p[2]*1e3)/1e3];
+  const key = (p) => q(p).join(',');
+  const verts = new Map();      // key -> {p, id}
+  const byId = [];              // id -> info
+  const NBR = new Map();        // id -> Set(neighbour id)
+  const idOf = (p) => {
+    const k = key(p);
+    if (!verts.has(k)) {
+      const id = verts.size;
+      const info = { p: q(p), id, used: false };
+      verts.set(k, info);
+      byId[id] = info;
+      NBR.set(id, new Set());
+    }
+    return verts.get(k).id;
+  };
+  for (const [a, b] of segs) {
+    const ia = idOf(a), ib = idOf(b);
+    if (ia === ib) continue;
+    NBR.get(ia).add(ib);
+    NBR.get(ib).add(ia);
+  }
+
+  // 连成环：从每个未用过的顶点出发，沿邻居走回起点
+  const pt = (id) => byId[id].p;
+  const dist = (i, j) => {
+    const a = pt(i), b = pt(j);
+    return Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
+  };
+  const u = (axis+1)%3, w = (axis+2)%3;   // 提前：环连接要按 2D 转角走
+  const p2 = (id) => { const p = byId[id].p; return [p[u], p[w]]; };
+  const angOf = (from, to) => {
+    const a = p2(from), b = p2(to);
+    return Math.atan2(b[1]-a[1], b[0]-a[0]);
+  };
+  // 平面图面遍历：每条有向边只用一次；在对端点取"转角最小"的邻边，贴着面走
+  const loops = [];
+  const usedEdge = new Set();
+  const ek = (a, b) => (a < b ? a + ',' + b : b + ',' + a);
+  for (const [, info0] of verts) {
+    const id = info0.id;
+    if (byId[id].used) continue;
+    const loop = [id];
+    byId[id].used = true;
+    let prev = -1, cur = id, guard = 0;
+    while (guard++ < 20000) {
+      const nbrs = [...(NBR.get(cur) || [])].filter(n => n !== prev && (!byId[n].used || n === id));
+      if (!nbrs.length) break;
+      let nxt = nbrs[0];
+      if (prev >= 0 && nbrs.length > 1) {       // 按 2D 转角选，不按距离
+        const dirIn = angOf(prev, cur);
+        let bestD = -Infinity;
+        for (const n of nbrs) {
+          let d = angOf(cur, n) - dirIn;
+          while (d >= -1e-9) d -= Math.PI * 2;   // (-2pi, 0]，取最大 = 顺时针最紧
+          if (d > bestD) { bestD = d; nxt = n; }
+        }
+      }
+      if (nxt === id) break;
+      if (usedEdge.has(ek(cur, nxt))) break;
+      usedEdge.add(ek(cur, nxt));
+      loop.push(nxt);
+      byId[nxt].used = true;
+      prev = cur; cur = nxt;
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+
+  window.__loops = loops.length;
+  window.__ringTxt = loops.map(l => l.length).sort((a,b) => b-a).slice(0,8).join('/');
+  const out = [];
+  const rings = loops.map(loop => {
+    const poly = loop.map(id => { const p = pt(id); return [p[u], p[w]]; });
+    let area = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i+1)%poly.length];
+      area += a[0]*b[1] - b[0]*a[1];
+    }
+    return { loop, poly, area };
+  });
+  const maxA = rings.reduce((m, r) => Math.max(m, Math.abs(r.area)), 0);
+  const insidePoint = (poly) => {          // 环内一个必然在内部（不落在边上）的点
+    const n = poly.length;
+    for (let i = 0; i < n; i++) {
+      const a = poly[i], b = poly[(i+1) % n], c = poly[(i+2) % n];
+      const m = [(a[0]+b[0]+c[0]) / 3, (a[1]+b[1]+c[1]) / 3];
+      if (inPoly(m, poly)) return m;
+    }
+    return poly[0];
+  };
+  const inPoly = (p, poly) => {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i], b = poly[j];
+      if (((a[1] > p[1]) !== (b[1] > p[1])) &&
+          (p[0] < (b[0]-a[0]) * (p[1]-a[1]) / (b[1]-a[1]) + a[0])) c = !c;
+    }
+    return c;
+  };
+  for (const ring of rings) {
+    let hole = false;
+    for (const other of rings) {
+      if (other === ring || other.poly.length < 3) continue;
+      if (inPoly(insidePoint(ring.poly), other.poly)) { hole = true; break; }
+    }
+    if (hole && maxA > 0 && Math.abs(ring.area) < maxA * 0.4) {
+      const hp = ring.poly;
+      for (let i = 1; i + 1 < hp.length; i++) {
+        const p0 = pt(ring.loop[0]), p1 = pt(ring.loop[i]), p2 = pt(ring.loop[i+1]);
+        holeOut.push(p0[0],p0[1],p0[2], p1[0],p1[1],p1[2], p2[0],p2[1],p2[2]);
+      }
+      continue;
+    }                       // 孔：不封，保持透空
+    const loop = ring.loop, poly = ring.poly;
+    let area = ring.area;
+    const holes = rings.filter(r => r !== ring && r.poly.length >= 3 && maxA > 0 && Math.abs(r.area) < maxA * 0.4
+                       && inPoly(insidePoint(r.poly), poly)).map(r => r.poly);
+  if (area < 0) { poly.reverse(); loop.reverse(); }
+    // 耳切
+    const idx = poly.map((_, i) => i);
+    let guard = 0;
+    const cross = (a,b,c) => (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]);
+    const inTri = (p,a,b,c) => {
+      const d1 = cross(a,b,p), d2 = cross(b,c,p), d3 = cross(c,a,p);
+      return (d1>=0 && d2>=0 && d3>=0) || (d1<=0 && d2<=0 && d3<=0);
+    };
+    const emit = (i, j, k) => {
+      const A = pt(loop[i]), B = pt(loop[j]), C = pt(loop[k]);
+      out.push(A[0],A[1],A[2], B[0],B[1],B[2], C[0],C[1],C[2]);
+    };
+    while (idx.length > 3 && guard++ < 10000) {
+      let found = false;
+      for (let i = 0; i < idx.length; i++) {
+        const i0 = idx[(i+idx.length-1)%idx.length], i1 = idx[i], i2 = idx[(i+1)%idx.length];
+        const a = poly[i0], b = poly[i1], c = poly[i2];
+        if (cross(a,b,c) <= 1e-9) continue;
+        if (holes.length) {                       // 别跨孔连
+          const mx = (a[0]+b[0]+c[0])/3, my = (a[1]+b[1]+c[1])/3;
+          let bad = false;
+          for (const h of holes) if (inPoly([mx,my], h)) { bad = true; break; }
+          if (bad) continue;
+        }          // 凹角
+        let ok = true;
+        for (const j of idx) {
+          if (j===i0||j===i1||j===i2) continue;
+          if (inTri(poly[j], a, b, c)) { ok = false; break; }
+        }
+        if (!ok) continue;
+        emit(i0, i1, i2);
+        idx.splice(i, 1);
+        found = true;
+        break;
+      }
+      if (!found) break;
+    }
+    if (idx.length === 3) emit(idx[0], idx[1], idx[2]);
+  }
+  return { cap: out, holes: holeOut };
+}
+
+function rebuildCap(){
+  if (st.clipAxis < 0 || !meshVs || !meshIx || !bbox){ capData = null; return; }
+  var ax = st.clipAxis;
+  var lo = bbox.mn[ax], hi = bbox.mx[ax];
+  var v = lo + (hi - lo) * st.clipVal;
+  var t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const res = buildCap(meshVs, meshIx, ax, v);
+  capData = res.cap; holeData = res.holes; holeDirty = true;
+  var t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  capMs = t1 - t0;
+  if (typeof elStat !== 'undefined' && elStat) {
+    elStat.textContent = 'NX · 封口 ' + (capData.length / 9) + ' 面 · ' + capMs.toFixed(0) + ' ms';
+  }
+}
+
+function upload(m){
+  const vs = m.vertices, ix = m.indices;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, vs instanceof Float32Array ? vs : new Float32Array(vs), gl.STATIC_DRAW);
+  if(!ebo) ebo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+  const arr = IDX_UINT ? new Uint32Array(ix) : new Uint16Array(ix);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+  nIdx = ix.length;
+  meshVs = vs instanceof Float32Array ? vs : new Float32Array(vs);
+  meshIx = ix instanceof Uint32Array ? ix : new Uint32Array(ix);
+  capDirty = true;
+
+  // 边索引：每个三角形三条边，线框和轮廓线都用它
+  const nTri = nIdx / 3;
+  const e = IDX_UINT ? new Uint32Array(nTri * 6) : new Uint16Array(nTri * 6);
+  for(let t=0;t<nTri;t++){
+    const a=ix[t*3], b=ix[t*3+1], c=ix[t*3+2];
+    e[t*6]=a; e[t*6+1]=b; e[t*6+2]=b; e[t*6+3]=c; e[t*6+4]=c; e[t*6+5]=a;
+  }
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, edgeBuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, e, gl.STATIC_DRAW);
+  nEdge = e.length;
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+
+  // 包围盒顶点 + 面积/体积
+  let mn=[1e30,1e30,1e30], mx=[-1e30,-1e30,-1e30], area=0, vol=0;
+  const stride = 6;
+  for(let i=0;i<vs.length;i+=stride){
+    for(let k=0;k<3;k++){ const v=vs[i+k]; if(v<mn[k]) mn[k]=v; if(v>mx[k]) mx[k]=v; }
+  }
+  for(let t=0;t<nTri;t++){
+    const a=ix[t*3]*stride, b=ix[t*3+1]*stride, c=ix[t*3+2]*stride;
+    const ax=vs[a],ay=vs[a+1],az=vs[a+2], bx=vs[b],by=vs[b+1],bz=vs[b+2], cx=vs[c],cy=vs[c+1],cz=vs[c+2];
+    const ux=bx-ax, uy=by-ay, uz=bz-az, vx=cx-ax, vy=cy-ay, vz=cz-az;
+    const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    area += Math.hypot(nx,ny,nz)/2;
+    vol += (ax*(by*cz-bz*cy) + ay*(bz*cx-bx*cz) + az*(bx*cy-by*cx))/6;
+  }
+  bbox = {mn, mx, area, vol: Math.abs(vol), tris: nTri};
+  const corners = [];
+  for(let i=0;i<8;i++) corners.push([ (i&1)?mx[0]:mn[0], (i&2)?mx[1]:mn[1], (i&4)?mx[2]:mn[2] ]);
+  const E = [[0,1],[1,3],[3,2],[2,0],[4,5],[5,7],[7,6],[6,4],[0,4],[1,5],[2,6],[3,7]];
+  const bg = new Float32Array(E.length*6);
+  E.forEach((pair,i)=>{
+    bg[i*6]=corners[pair[0]][0]; bg[i*6+1]=corners[pair[0]][1]; bg[i*6+2]=corners[pair[0]][2];
+    bg[i*6+3]=corners[pair[1]][0]; bg[i*6+4]=corners[pair[1]][1]; bg[i*6+5]=corners[pair[1]][2];
+  });
+  gl.bindBuffer(gl.ARRAY_BUFFER, bboxBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, bg, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+
+  showInfo(m.name);
+}
+
+function fmt(n, d){ return (Math.abs(n)>=1000 ? n.toFixed(2) : n.toFixed(d==null?3:d)); }
+
+function showInfo(name){
+  if(!bbox) return;
+  document.getElementById('i-name').textContent = name || '—';
+  document.getElementById('i-vol').textContent  = fmt(bbox.vol) + ' mm³';
+  document.getElementById('i-area').textContent = fmt(bbox.area) + ' mm²';
+  const s = [bbox.mx[0]-bbox.mn[0], bbox.mx[1]-bbox.mn[1], bbox.mx[2]-bbox.mn[2]];
+  document.getElementById('i-bbox').textContent = s.map(v=>v.toFixed(2)).join(' × ');
+  document.getElementById('i-tris').textContent = bbox.tris.toLocaleString();
+}
+
+function fit(m){
+  if(!bbox) return;
+  const c = [(bbox.mn[0]+bbox.mx[0])/2, (bbox.mn[1]+bbox.mx[1])/2, (bbox.mn[2]+bbox.mx[2])/2];
+  const r = Math.hypot(bbox.mx[0]-bbox.mn[0], bbox.mx[1]-bbox.mn[1], bbox.mx[2]-bbox.mn[2]) / 2;
+  cam.target = c;
+  cam.dist = r / Math.sin(cam.fov*Math.PI/360) * 1.45;
+  cam.rot = mul(rotAxis(0, -0.52), mul(rotAxis(1, 0.42), rotIdent()));
+}
+
+/* 剖切面朝相机那一侧是 +轴 还是 -轴：用相机在物体坐标系里的位置判断 */
+function camToObjSign(ax){
+  const m = cam.rot, t = cam.target;
+  const ex = 0 - t[0], ey = 0 - t[1], ez = cam.dist - t[2];   // 相机在目标坐标系的偏移
+  const o = [ m[0]*ex + m[1]*ey + m[2]*ez,                   // 转回物体坐标
+              m[4]*ex + m[5]*ey + m[6]*ez,
+              m[8]*ex + m[9]*ey + m[10]*ez ];
+  return o[ax] >= 0 ? -1 : 1;
+}
+
+function drawScene(){
+  if(!nIdx) return;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if(cv.width !== Math.floor(w*dpr) || cv.height !== Math.floor(h*dpr)){
+    cv.width = Math.floor(w*dpr); cv.height = Math.floor(h*dpr);
+  }
+  gl.viewport(0,0,cv.width,cv.height);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+
+  const d = cam.dist, t = cam.target;
+  const eye = [t[0], t[1], t[2] + d];
+  const mv = mul(lookAt(eye, t, [0,1,0]), cam.rot);
+  const mvp = mul(perspective(cam.fov*Math.PI/180, cv.width/cv.height, d*0.01, d*8), mv);
+  gl.uniformMatrix4fv(uMv, false, mv);
+  gl.uniformMatrix4fv(uMvp, false, mvp);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  const lp = gl.getAttribLocation(prog,'p'), ln = gl.getAttribLocation(prog,'n');
+  gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(ln); gl.vertexAttribPointer(ln, 3, gl.FLOAT, false, 24, 12);
+
+  gl.uniform1f(uLit, st.shadow ? 1.0 : 0.0);
+  gl.uniform1f(uAlpha, st.alpha ? 0.42 : 1.0);
+  if(st.clipAxis >= 0 && bbox){
+    const ax = [0,0,0]; ax[st.clipAxis] = 1;
+    const lo = bbox.mn[st.clipAxis], hi = bbox.mx[st.clipAxis];
+    gl.uniform4f(uClip, ax[0], ax[1], ax[2], lo + (hi-lo)*st.clipVal);
+  } else {
+    gl.uniform4f(uClip, 0,0,0, 0);
+  }
+
+  if(st.alpha){
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  } else {
+    gl.disable(gl.BLEND);
+  }
+
+  const clipOn = st.clipAxis >= 0 && !!bbox;
+  if(st.wire){
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, edgeBuf);
+    gl.drawElements(gl.LINES, nEdge, IDX_TYPE, 0);
+  } else {
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+    gl.drawElements(gl.TRIANGLES, nIdx, IDX_TYPE, 0);
+
+    /* 剖切封盖：用模板缓冲数出"实体内部"的像素，再往那儿涂一片平色。
+       正面 +1、背面 -1，净数非零即在实体里；孔洞贯穿的地方净数为零，所以孔还是空的。 */
+        if(clipOn){
+      if (capDirty){ rebuildCap(); capDirty = false; }
+      if (capData && capData.length){
+        if (!capVBO) capVBO = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, capVBO);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(capData), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(lp);
+        gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 12, 0);
+        gl.disableVertexAttribArray(ln);
+        gl.uniform1f(uIsCap, 1.0);
+        gl.uniform4f(uClip, 0, 0, 0, 0);
+        gl.depthFunc(gl.ALWAYS);        /* 封盖恒过深度，压住内壁 */
+        gl.drawArrays(gl.TRIANGLES, 0, capData.length / 3);
+        if (holeData && holeData.length){
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(holeData), gl.DYNAMIC_DRAW);
+          gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 12, 0);
+          gl.uniform1f(uIsCap, 2.0);
+          gl.depthFunc(gl.LEQUAL);
+          gl.drawArrays(gl.TRIANGLES, 0, holeData.length / 3);
+        }
+        gl.depthFunc(gl.LESS);
+        gl.uniform1f(uIsCap, 0.0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.enableVertexAttribArray(ln);
+        gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 24, 0);
+        gl.vertexAttribPointer(ln, 3, gl.FLOAT, false, 24, 12);
+      }
+    }
+  }
+
+  if(st.outline && !st.wire){
+    gl.uniform1f(uAlpha, 1.0);
+    gl.uniform4f(uClip, 0,0,0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, edgeBuf);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.drawElements(gl.LINES, nEdge, IDX_TYPE, 0);
+  }
+
+  if(st.bbox && bbox){
+    gl.uniform1f(uAlpha, 1.0);
+    gl.uniform1f(uLit, 0.0);
+    gl.uniform4f(uClip, 0,0,0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bboxBuf);
+    gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 12, 0);
+    gl.disableVertexAttribArray(ln);
+    gl.vertexAttrib3f(ln, 0.0, 1.0, 0.0);
+    gl.drawArrays(gl.LINES, 0, 24);
+    gl.enableVertexAttribArray(ln);
+  }
+
+  gl.disable(gl.BLEND);
+}
+
+function draw(){ try { drawScene(); } catch(e) { elStat.textContent = '绘制错误: ' + e.message; } }
+
+// ---- 交互 ----
+let drag = null;
+const wrapPoint = (ev) => {
+  const r = cv.getBoundingClientRect();
+  return { x: ev.clientX - r.left, y: ev.clientY - r.top, w: r.width, h: r.height };
+};
+
+cv.addEventListener('mousedown', (ev) => {
+  if(ev.button === 0 && st.mode === 'rotate') drag = { kind:'rot', x:ev.clientX, y:ev.clientY };
+  else if(ev.button === 2 || (ev.button === 0 && st.mode === 'pan')) drag = { kind:'pan', x:ev.clientX, y:ev.clientY };
+  else if(ev.button === 1) drag = { kind:'pan', x:ev.clientX, y:ev.clientY };
+  if(drag) ev.preventDefault();
+});
+
+window.addEventListener('mousemove', (ev) => {
+  if(!drag) return;
+  const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+  drag.x = ev.clientX; drag.y = ev.clientY;
+  if(drag.kind === 'rot'){
+    const k = 0.0075;
+    if(st.lock >= 0){
+      const m = rotAxis(st.lock, (st.lock === 1 ? dx : dy) * k);
+      cam.rot = mul(m, cam.rot);
+    } else {
+      cam.rot = mul(rotAxis(1, dx*k), mul(rotAxis(0, dy*k), cam.rot));
+    }
+  } else {
+    const s = cam.dist * 0.0018;
+    const m = cam.rot;
+    cam.target[0] -= (m[0]*dx + m[4]*dy) * s;
+    cam.target[1] -= (m[1]*dx + m[5]*dy) * s;
+    cam.target[2] -= (m[2]*dx + m[6]*dy) * s;
+  }
+});
+
+window.addEventListener('mouseup', () => { drag = null; });
+cv.addEventListener('contextmenu', (ev) => ev.preventDefault());
+cv.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  cam.dist *= Math.exp((ev.deltaY > 0 ? 1 : -1) * 0.12);
+  cam.dist = Math.max(1, cam.dist);
+}, { passive: false });
+cv.addEventListener('dblclick', () => fit());
+
+// ---- 工具栏 ----
+const btn = (id) => document.getElementById(id);
+function refreshTools(){
+  btn('t-rot').className = st.mode === 'rotate' ? 'on' : '';
+  btn('t-pan').className = st.mode === 'pan' ? 'on' : '';
+  btn('t-wire').className = st.wire ? 'on' : '';
+  btn('t-alpha').className = st.alpha ? 'on' : '';
+  btn('t-outline').className = st.outline ? 'on' : '';
+  btn('t-bbox').className = st.bbox ? 'on' : '';
+  btn('t-clip').className = st.clipAxis >= 0 ? 'on' : '';
+  btn('t-shadow').className = st.shadow ? 'on' : '';
+  btn('t-shadow').textContent = st.shadow ? '有阴影' : '无阴影';
+  btn('t-clip').textContent = st.clipAxis < 0 ? '剖切' : ('剖切 ' + 'XYZ'[st.clipAxis]);
+  document.getElementById('clip').className = st.clipAxis >= 0 ? 'show' : '';
+  document.querySelectorAll('#lock button').forEach((b) => {
+    const v = b.dataset.lock;
+    b.className = (v === 'free' ? (st.lock < 0) : (Number(v) === st.lock)) ? 'on' : '';
+  });
+}
+btn('t-reset').onclick = () => { fit(); };
+btn('t-rot').onclick = () => { st.mode = 'rotate'; refreshTools(); };
+btn('t-pan').onclick = () => { st.mode = 'pan'; refreshTools(); };
+btn('t-wire').onclick = () => { st.wire = !st.wire; refreshTools(); };
+btn('t-alpha').onclick = () => { st.alpha = !st.alpha; refreshTools(); };
+btn('t-outline').onclick = () => { st.outline = !st.outline; refreshTools(); };
+btn('t-bbox').onclick = () => { st.bbox = !st.bbox; refreshTools(); };
+btn('t-shadow').onclick = () => { st.shadow = !st.shadow; refreshTools(); };
+btn('t-clip').onclick = () => {
+  st.clipAxis = st.clipAxis >= 2 ? -1 : st.clipAxis + 1;
+  if(st.clipAxis >= 0) faceAxis(st.clipAxis);
+  capDirty = true;
+  refreshTools();
+};
+
+/* 正对某个坐标轴看：X→从 +X 看向 -X，Y→+Y 看向 -Y，Z→+Z 俯视。
+   剖切丢弃的是"轴上大于切面值"的那一半，所以相机必须站在切口这一侧才看得到剖面。 */
+function faceAxis(ax){
+  if(ax === 0)      cam.rot = rotAxis(1, -Math.PI/2);
+  else if(ax === 1) cam.rot = rotAxis(0, -Math.PI/2);
+  else              cam.rot = rotIdent();
+}
+document.getElementById('clipv').oninput = (ev) => { st.clipVal = ev.target.value / 1000; capDirty = true; };
+
+/* 信息卡贴着底部工具条上方：工具条换行变高时它会跟着上移，永远不会被压住 */
+const elBottomBar = document.getElementById('bottom');
+const elInfoBox = document.getElementById('info');
+function layoutInfo(){
+  if(!elBottomBar || !elInfoBox) return;
+  const h = elBottomBar.getBoundingClientRect().height || 0;
+  elInfoBox.style.bottom = (h + 16) + 'px';
+}
+window.addEventListener('resize', layoutInfo);
+if (window.ResizeObserver) new ResizeObserver(layoutInfo).observe(elBottomBar);
+layoutInfo();
+document.querySelectorAll('#lock button').forEach((b) => {
+  b.onclick = () => {
+    const v = b.dataset.lock;
+    st.lock = v === 'free' ? -1 : Number(v);
+    refreshTools();
+  };
+});
+document.getElementById('cp').onclick = () => {
+  if(!bbox) return;
+  const t = '模型名称 ' + document.getElementById('i-name').textContent
+    + '\n体积 ' + document.getElementById('i-vol').textContent
+    + '\n表面积 ' + document.getElementById('i-area').textContent
+    + '\n包围盒 ' + document.getElementById('i-bbox').textContent
+    + '\n三角面 ' + document.getElementById('i-tris').textContent;
+  navigator.clipboard.writeText(t);
+  const el = document.getElementById('cp');
+  el.textContent = '✓';
+  setTimeout(() => { el.textContent = '⧉'; }, 900);
+};
+refreshTools();
+
+// ---- 数据 ----
+const elQual = document.getElementById('qual'), elFlat = document.getElementById('flat');
+let seq = -1, ms = 0;
+
+async function pushQuality(){
+  try{
+    await fetch('/dsh-nx/live3d/quality', { method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ tol: Number(elQual.value), flat: elFlat.checked }) });
+  } catch(e){}
+}
+
+async function pull(){
+  try{
+    const r = await fetch('/dsh-nx/live3d/mesh?seq=' + seq, { cache:'no-store' });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    if(j.error) throw new Error(j.error);
+    elDot.className = '';
+    if(!j.unchanged && j.vertices && j.indices){
+      seq = j.seq; ms = j.ms || 0;
+      upload(j);
+      if(!window.__fitted){ fit(); window.__fitted = true; }
+      elTitle.textContent = j.name || 'NX';
+      elStat.textContent = (j.title||'NX') + ' · b17 · ' + (j.tris || (j.indices.length/3)).toLocaleString() + ' 三角面 · ' + ms + ' ms';
+    }
+  } catch(e){
+    elDot.className = 'off';
+    elTitle.textContent = '捕获失败: ' + e.message;
+  }
+  setTimeout(pull, 700);
+}
+
+elQual.onchange = pushQuality;
+elFlat.onchange = pushQuality;
+fetch('/dsh-nx/live3d/quality').then(r=>r.json()).then(j=>{
+  if(j && typeof j.tol === 'number'){
+    const opt = [...elQual.options].find(o => Math.abs(Number(o.value) - j.tol) < 1e-6);
+    if(opt) elQual.value = opt.value;
+  }
+  if(j && typeof j.flat === 'boolean') elFlat.checked = j.flat;
+}).catch(()=>{});
+
+initGL();
+pull();
+setInterval(draw, 33);
+draw();
+</script>

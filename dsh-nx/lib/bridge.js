@@ -19,8 +19,15 @@ const DEFAULT_WORKER = path.join(HERE, '..', 'python', 'nxworker.py');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Kill a process and its children; NX spawns a small tree. */
+const IS_WINDOWS = process.platform === 'win32';
+
+/** Why this plugin cannot work here — used by ensure() and by the tool layer. */
+const PLATFORM_HINT = 'dsh-nx drives Siemens NX through its batch runner '
+    + '(NXBIN\\run_journal.exe) and kills the worker tree with taskkill — both are Windows-only. '
+    + 'This host is ' + process.platform + '.';
+
 async function killTree(pid) {
-    if (pid === undefined || pid === null)
+    if (pid === undefined || pid === null || !IS_WINDOWS)
         return;
     await new Promise((resolve) => {
         const child = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
@@ -172,6 +179,10 @@ export class NxBridge {
 
     /** Start the worker if it is not already answering. Idempotent. */
     async ensure() {
+        /* 与其让用户看到 "ENOENT: run_journal.exe" 或 "spawn taskkill ENOENT"，
+           不如在真正要拉起 NX 之前把原因说清楚。 */
+        if (!IS_WINDOWS)
+            throw new Error(PLATFORM_HINT);
         const ready = this.readReady();
         if (ready !== undefined) {
             this.pid = ready.pid;
@@ -320,7 +331,7 @@ export class NxBridge {
 }
 
 function ifDelay() {
-    return 120;
+    return 6;
 }
 
 function isAlive(pid) {

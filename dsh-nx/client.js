@@ -102,106 +102,8 @@ window.__ModuleLoader__.load({
          * plus the measurements the info card shows (taken from the mm coordinates, before
          * the mesh is normalised, so the numbers stay honest).
          */
-        function readStl(buffer) {
-            const view = new DataView(buffer);
-            let points = null;
-            if (buffer.byteLength >= 84) {
-                const declared = view.getUint32(80, true);
-                if (declared > 0 && 84 + declared * 50 <= buffer.byteLength) {
-                    points = new Float32Array(declared * 9);
-                    let offset = 84;
-                    for (let i = 0; i < declared; i += 1) {
-                        offset += 12;
-                        for (let v = 0; v < 9; v += 1) {
-                            points[i * 9 + v] = view.getFloat32(offset, true);
-                            offset += 4;
-                        }
-                        offset += 2;
-                    }
-                }
-            }
-            if (!points) {
-                const text = new TextDecoder().decode(buffer);
-                const found = [];
-                const pattern = /vertex\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)/g;
-                let match = pattern.exec(text);
-                while (match) {
-                    found.push(Number(match[1]), Number(match[2]), Number(match[3]));
-                    match = pattern.exec(text);
-                }
-                if (!found.length) return null;
-                points = new Float32Array(found);
-            }
-            let minX = Infinity, minY = Infinity, minZ = Infinity;
-            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-            for (let i = 0; i < points.length; i += 3) {
-                if (points[i] < minX) minX = points[i];
-                if (points[i] > maxX) maxX = points[i];
-                if (points[i + 1] < minY) minY = points[i + 1];
-                if (points[i + 1] > maxY) maxY = points[i + 1];
-                if (points[i + 2] < minZ) minZ = points[i + 2];
-                if (points[i + 2] > maxZ) maxZ = points[i + 2];
-            }
+        /* readStl / finishMesh / meshFromLive 已移除：预览改用 lib/preview.html。 */
 
-            // Area and signed volume straight off the triangles: for a closed mesh these add
-            // up to the same numbers NX reports, which is what the info card is imitating.
-            let area = 0;
-            let volume = 0;
-            // Watertight test: a closed solid has every triangle edge shared by exactly two
-            // triangles. A sheet body does not, and its "volume" is a signed tetrahedron sum
-            // that means nothing -- the info card reports the body type instead.
-            const edges = new Map();
-            const key = (x, y, z) => `${Math.round(x * 1000)},${Math.round(y * 1000)},${Math.round(z * 1000)}`;
-            for (let i = 0; i + 8 < points.length; i += 9) {
-                const ax = points[i], ay = points[i + 1], az = points[i + 2];
-                const bx = points[i + 3], by = points[i + 4], bz = points[i + 5];
-                const cx = points[i + 6], cy = points[i + 7], cz = points[i + 8];
-                const ux = bx - ax, uy = by - ay, uz = bz - az;
-                const vx = cx - ax, vy = cy - ay, vz = cz - az;
-                const nx = uy * vz - uz * vy;
-                const ny = uz * vx - ux * vz;
-                const nz = ux * vy - uy * vx;
-                area += Math.sqrt(nx * nx + ny * ny + nz * nz) / 2;
-                volume += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6;
-                const ka = key(ax, ay, az), kb = key(bx, by, bz), kc = key(cx, cy, cz);
-                for (const pair of [[ka, kb], [kb, kc], [kc, ka]]) {
-                    const edge = pair[0] < pair[1] ? `${pair[0]}|${pair[1]}` : `${pair[1]}|${pair[0]}`;
-                    edges.set(edge, (edges.get(edge) || 0) + 1);
-                }
-            }
-            let open = 0;
-            for (const count of edges.values()) if (count !== 2) open += 1;
-            const closed = open === 0 && edges.size > 0;
-
-            const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2, midZ = (minZ + maxZ) / 2;
-            const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
-            const factor = 2 / extent;
-            // Centre, scale to ±1, and turn Z-up (NX) into Y-up (the viewer): (x, y, z) ->
-            // (x, z, -y). A rotation (determinant +1), not a swap, so the winding keeps its
-            // meaning -- and +Z really ends up on top instead of the part being shown upside down.
-            for (let i = 0; i < points.length; i += 3) {
-                const x = points[i], y = points[i + 1], z = points[i + 2];
-                points[i] = (x - midX) * factor;
-                points[i + 1] = (z - midZ) * factor;
-                points[i + 2] = -(y - midY) * factor;
-            }
-            return {
-                points,
-                metrics: {
-                    triangles: Math.floor(points.length / 9),
-                    area,
-                    volume: Math.abs(volume),
-                    closed,
-                    openEdges: open,
-                    size: [maxX - minX, maxY - minY, maxZ - minZ],
-                    min: [minX, minY, minZ],
-                    max: [maxX, maxY, maxZ],
-                },
-            };
-        }
-
-        // Key light in VIEW space: up and to the left of the camera, so the lit side of a boss
-        // reads as raised instead of flat.
         const LIGHT = [-0.35, 0.86, 0.38];
 
         const VIEW_DEFAULTS = { rot: null, zoom: 1, panX: 0, panY: 0 };
@@ -760,370 +662,10 @@ window.__ModuleLoader__.load({
         }
 
         /** Model viewer in the shape of a JLC-style preview: grey stage, view cube, info card, tool bar. */
-        function NxViewer(props) {
-            const [canvas, setCanvas] = React.useState(null);
-            const [frame, setFrame] = React.useState(null);
-            const [mesh, setMesh] = React.useState(null);
-            const [error, setError] = React.useState(null);
-            const [view, setView] = React.useState({ rot: VIEW_ISO, zoom: 1, panX: 0, panY: 0 });
-            const [preset, setPreset] = React.useState('iso');
-            const [flags, setFlags] = React.useState({ wireframe: false, transparent: false, outline: false, flat: false, bbox: false, axes: true, info: true, toolbar: true });
-            const [mode, setMode] = React.useState('rotate');
-            const [clipMode, setClipMode] = React.useState(-1);
-            const [clipValue, setClipValue] = React.useState(1);
-            const [drag, setDrag] = React.useState(null);
-            const [hoverAxis, setHoverAxis] = React.useState(null);
-            const [lockAxis, setLockAxis] = React.useState(null);
-            const [canvasSize, setCanvasSize] = React.useState(0);
-            const [copied, setCopied] = React.useState(null);
-            const [debug, setDebug] = React.useState('');
+        /* 原来的 2D canvas 预览（NxViewer）已停用：实时预览改由 lib/preview.html 承担，
+           这里的 h(NxViewer, …) 调用点全部换成 <iframe src="/dsh-nx/live3d/">。 */
+        function NxViewer() { return null; }
 
-            React.useEffect(() => {
-                let cancelled = false;
-                setMesh(null);
-                setError(null);
-                fetch(props.url, { cache: 'no-store' })
-                    .then((response) => response.arrayBuffer())
-                    .then((buffer) => {
-                        if (cancelled) return;
-                        const parsed = readStl(buffer);
-                        if (!parsed) setError('STL 解析失败');
-                        else setMesh(parsed);
-                    })
-                    .catch((failure) => { if (!cancelled) setError(String(failure && failure.message ? failure.message : failure)); });
-                return () => { cancelled = true; };
-            }, [props.url]);
-
-            React.useEffect(() => {
-                if (!mesh || !canvas) return;
-                try {
-                    paint(canvas, mesh.points, {
-                        rot: view.rot, zoom: view.zoom, panX: view.panX, panY: view.panY,
-                        background: '#eef1f4',
-                        wireframe: flags.wireframe,
-                        transparent: flags.transparent,
-                        outline: flags.outline,
-                        flat: flags.flat,
-                        bbox: flags.bbox ? mesh.metrics : null,
-                        axes: flags.axes ? (drag && drag.axis ? drag.axis : (hoverAxis || lockAxis)) : null,
-                        clip: clipMode >= 0 ? { axis: clipMode, value: clipValue } : null,
-                    });
-                    setDebug(canvas.width + '×' + canvas.height + ' · css ' + canvas.clientWidth + '×'
-                        + canvas.clientHeight + ' · ' + Math.floor(mesh.points.length / 9) + ' 面');
-                    if (props.onDebug) {
-                        props.onDebug(canvas.width + '×' + canvas.height + ' · css ' + canvas.clientWidth + '×'
-                            + canvas.clientHeight + ' · ' + Math.floor(mesh.points.length / 9) + ' 面');
-                    }
-                } catch (failure) {
-                    setError(String(failure && failure.message ? failure.message : failure));
-                }
-            }, [mesh, canvas, view, flags, clipMode, clipValue, drag, hoverAxis, canvasSize]);
-
-            // A canvas keeps the bitmap it was last painted into, so resizing the panel only
-            // stretches those pixels. Repaint at the new size instead of letting CSS scale it.
-            React.useEffect(() => {
-                if (!canvas || typeof ResizeObserver === 'undefined') return undefined;
-                const observer = new ResizeObserver((entries) => {
-                    const rect = entries[0] && entries[0].contentRect;
-                    if (!rect) return;
-                    setCanvasSize(Math.round(rect.width) * 4096 + Math.round(rect.height));
-                });
-                observer.observe(canvas);
-                return () => observer.disconnect();
-            }, [canvas]);
-
-            function toggle(name) {
-                setFlags((current) => Object.assign({}, current, { [name]: !current[name] }));
-            }
-
-            function applyPreset(next) {
-                setPreset(next.id);
-                setView({ rot: next.rot, zoom: view.zoom, panX: 0, panY: 0 });
-            }
-
-            function resetView() {
-                setPreset('iso');
-                setView({ rot: VIEW_ISO, zoom: 1, panX: 0, panY: 0 });
-            }
-
-            /** Screen-space axis handles, so a pointer can be tested against the same lines the
-             * renderer drew (model space →canvas pixels, no hit geometry of its own). */
-            function axisTips() {
-                if (!canvas || !flags.axes) return [];
-                const width = canvas.clientWidth || 640;
-                const height = canvas.clientHeight || 320;
-                const scale = Math.min(width, height) * 0.45 * view.zoom;
-                const midX = width / 2 + view.panX, midY = height / 2 - view.panY;
-                const rot = view.rot || VIEW_ISO;
-                const tips = [];
-                for (let i = 0; i < AXIS_HANDLES.length; i += 1) {
-                    const handle = AXIS_HANDLES[i];
-                    const x = handle.dir[0] * AXIS_REACH, y = handle.dir[1] * AXIS_REACH, z = handle.dir[2] * AXIS_REACH;
-                    const px = rot[0] * x + rot[1] * y + rot[2] * z;
-                    const py = rot[3] * x + rot[4] * y + rot[5] * z;
-                    tips.push({ id: handle.id, x: midX + px * scale, y: midY - py * scale, depth: rot[6] * x + rot[7] * y + rot[8] * z });
-                }
-                tips.push({ id: null, x: midX, y: midY, depth: 0 });
-                return tips;
-            }
-
-            function hitAxis(event) {
-                if (!flags.axes) return null;
-                const rect = canvas.getBoundingClientRect();
-                const px = event.clientX - rect.left;
-                const py = event.clientY - rect.top;
-                let best = null;
-                let bestDistance = AXIS_HIT_PX;
-                const tips = axisTips();
-                const origin = tips[tips.length - 1];
-                for (let i = 0; i < tips.length - 1; i += 1) {
-                    const tip = tips[i];
-                    const distance = distanceToSegment(px, py, origin.x, origin.y, tip.x, tip.y);
-                    if (distance < bestDistance) { bestDistance = distance; best = tip.id; }
-                }
-                return best;
-            }
-
-            function onPointerDown(event) {
-                try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ }
-                const axis = hitAxis(event);
-                setDrag({ x: event.clientX, y: event.clientY, panX: view.panX, panY: view.panY, axis });
-            }
-            function onPointerMove(event) {
-                if (!drag) {
-                    if (flags.axes) setHoverAxis(hitAxis(event));
-                    return;
-                }
-                const dx = event.clientX - drag.x;
-                const dy = event.clientY - drag.y;
-                if (mode === 'pan') {
-                    setView((current) => Object.assign({}, current, { panX: drag.panX + dx, panY: drag.panY - dy }));
-                    return;
-                }
-                setPreset('free');
-                if (drag.axis) {
-                    // Spin about the handle's own axis: take the axis into view space with the
-                    // current rotation, then pre-multiply by a rotation about exactly that
-                    // direction. The handle therefore stays put while the part turns.
-                    const handle = AXIS_HANDLES.find((item) => item.id === drag.axis);
-                    const delta = handle.drag === 'dy' ? dy : dx;
-                    const angle = handle.sign * delta * 0.0048;
-                    setView((current) => {
-                        const base = current.rot || VIEW_ISO;
-                        const axisInView = rotApply(base, handle.dir);
-                        return Object.assign({}, current, { rot: rotMul(rotAbout(axisInView, angle), base) });
-                    });
-                } else {
-                    setView((current) => Object.assign({}, current, {
-                        rot: rotMul(rotAxis('x', dy * 0.004), rotMul(rotAxis('y', dx * 0.004), current.rot || VIEW_ISO)),
-                    }));
-                }
-            }
-            function stopDrag() { setDrag(null); }
-            function onWheel(event) {
-                event.preventDefault();
-                const direction = event.deltaY > 0 ? 0.92 : 1.08;
-                setView((current) => Object.assign({}, current, {
-                    zoom: Math.max(0.35, Math.min(6, current.zoom * direction)),
-                }));
-            }
-
-            // React registers wheel handlers as passive, so preventDefault() there is ignored and
-            // the page scrolls while the model zooms. Bind natively instead.
-            React.useEffect(() => {
-                if (!canvas) return undefined;
-                canvas.addEventListener('wheel', onWheel, { passive: false });
-                return () => canvas.removeEventListener('wheel', onWheel);
-            }, [canvas]);
-
-            function copyText(label, text) {
-                try {
-                    void navigator.clipboard.writeText(text);
-                    setCopied(label);
-                    window.setTimeout(() => setCopied(null), 1200);
-                } catch { /* clipboard blocked */ }
-            }
-
-            function snapshot() {
-                if (!canvas) return;
-                try {
-                    const link = document.createElement('a');
-                    link.href = canvas.toDataURL('image/png');
-                    link.download = String(props.name || 'nx-model').replace(/\.[^.]+$/, '') + '.png';
-                    link.click();
-                } catch (failure) {
-                    setError(String(failure && failure.message ? failure.message : failure));
-                }
-            }
-
-            function toggleFullscreen() {
-                try {
-                    if (!document.fullscreenElement) void frame.requestFullscreen();
-                    else void document.exitFullscreen();
-                } catch { /* fullscreen refused */ }
-            }
-
-            const metrics = mesh ? mesh.metrics : null;
-            const presetLabel = (VIEW_PRESETS.find((item) => item.id === preset) || { label: 'FREE' }).label;
-            const clipNames = ['', 'X', 'Y', 'Z'];
-
-            const barButtons = [
-                ['回到原点', false, resetView, '恢复到等轴测视角与 100% 缩放'],
-                ['旋转', mode === 'rotate', () => setMode('rotate'), '拖拽空白处自由旋转；按住红/绿/蓝轴手柄则只绕那一根轴转'],
-                ['平移', mode === 'pan', () => setMode('pan'), '拖拽平移视图'],
-                ['轴手柄', flags.axes, () => toggle('axes'), '显示 / 隐藏 X Y Z 单轴旋转手柄'],
-                ['剖切', clipMode >= 0, () => setClipMode((current) => (current >= 2 ? -1 : current + 1)), '沿 X / Y / Z 依次剖切，再点一次关闭'],
-                ['包围盒', flags.bbox, () => toggle('bbox'), '显示包围盒与尺寸'],
-                ['线框', flags.wireframe, () => toggle('wireframe'), '只看三角面边线'],
-                ['透明', flags.transparent, () => toggle('transparent'), '半透明显示'],
-                ['轮廓线', flags.outline, () => toggle('outline'), '加深面边界'],
-                ['无阴影', flags.flat, () => toggle('flat'), '关闭明暗过渡'],
-                ['基本信息', flags.info, () => toggle('info'), '模型名称 / 体积 / 表面积 / 包围盒'],
-                ['截图', false, snapshot, '把当前视图存成 PNG'],
-                ['全屏', false, toggleFullscreen, '全屏查看'],
-                ['收起', !flags.toolbar, () => toggle('toolbar'), '收起工具条'],
-            ];
-
-            // `height: 100%` collapses to zero whenever the panel does not constrain its
-            // height, and the canvas is absolutely positioned inside this box, so the viewer
-            // would render nothing at all. Give the full-page mode a real height instead.
-            const frameStyle = props.fill
-                ? Object.assign({}, viewerCss.frame, { height: 'min(72vh, 760px)', minHeight: 380 })
-                : viewerCss.frame;
-
-            return h('div', { ref: setFrame, style: frameStyle },
-                h('canvas', {
-                    ref: setCanvas,
-                    onPointerDown,
-                    onPointerMove,
-                    onPointerUp: stopDrag,
-                    onPointerLeave: () => { stopDrag(); setHoverAxis(null); },
-                    style: Object.assign({}, viewerCss.canvas, {
-                        overscrollBehavior: 'contain',
-                        cursor: drag ? 'grabbing' : (hoverAxis ? 'grab' : (mode === 'pan' ? 'move' : 'grab')),
-                    }),
-                }),
-                mesh && !error ? null : h('div', { style: Object.assign({}, viewerCss.hint, { top: '46%', left: 0, right: 0, textAlign: 'center' }) },
-                    error ? '渲染失败：' + error : '正在载入网格…'),
-                debug
-                    ? h('div', {
-                        style: Object.assign({}, viewerCss.hint, { left: 8, bottom: 4, fontSize: 10, opacity: 0.55, pointerEvents: 'none' }),
-                    }, debug)
-                    : null,
-                mesh && flags.axes && !error
-                    ? h('div', { style: Object.assign({}, viewerCss.hint, { left: 12, bottom: 58, maxWidth: '58%' }) },
-                        hoverAxis || drag && drag.axis
-                            ? '已锁定 ' + String(hoverAxis || drag.axis).toUpperCase() + ' 轴 · 拖动只绕该轴旋转'
-                            : (lockAxis ? '已锁定 ' + String(lockAxis).toUpperCase() + ' 轴 · 拖动任意位置只绕该轴旋转（再点一次右上按钮取消）' : '拖动空白处自由旋转 · 按住 X / Y / Z 轴手柄只绕该轴旋转 · 右上角可锁定单轴 · 滚轮缩放'))
-                    : null,
-                h('div', {
-                    style: viewerCss.cube,
-                    title: '点击切换视角',
-                    onClick: () => {
-                        const index = VIEW_PRESETS.findIndex((item) => item.id === preset);
-                        applyPreset(VIEW_PRESETS[(index + 1) % VIEW_PRESETS.length]);
-                    },
-                },
-                h('svg', { width: 26, height: 26, viewBox: '0 0 32 32', 'aria-hidden': true },
-                    h('path', { d: 'M16 4 L28 10 L28 22 L16 28 L4 22 L4 10 Z', fill: '#f2f5f9', stroke: '#8a99a8', strokeWidth: 1.2 }),
-                    h('path', { d: 'M16 4 L28 10 L16 16 L4 10 Z', fill: '#dde5ee', stroke: '#8a99a8', strokeWidth: 1.1 }),
-                    h('path', { d: 'M16 16 L28 10 L28 22 L16 28 Z', fill: '#eef2f7', stroke: '#8a99a8', strokeWidth: 1.1 }),
-                    h('path', { d: 'M16 16 L4 10 L4 22 L16 28 Z', fill: '#e6ecf4', stroke: '#8a99a8', strokeWidth: 1.1 }),
-                ),
-                h('span', { style: viewerCss.cubeLabel }, presetLabel),
-                ),
-                mesh && flags.axes && !error
-                    ? h('div', { style: viewerCss.lockBar },
-                        h('div', { style: viewerCss.lockHint }, lockAxis ? '锁定中' : '锁定轴'),
-                        AXIS_HANDLES.map((handle) => h('button', {
-                            key: handle.id,
-                            title: lockAxis === handle.id ? '取消锁定，恢复自由旋转' : '锁定后拖动任意位置都只绕 ' + handle.id.toUpperCase() + ' 轴旋转',
-                            onClick: () => setLockAxis((current) => (current === handle.id ? null : handle.id)),
-                            style: Object.assign({}, viewerCss.lockButton, lockAxis === handle.id
-                                ? { color: '#ffffff', background: handle.color, borderColor: handle.color }
-                                : { color: handle.color, borderColor: 'rgba(0,0,0,0.12)' }),
-                        }, handle.label)),
-                    )
-                    : null,
-                flags.info && metrics
-                    ? h('div', { style: viewerCss.info },
-                        h('div', { style: { fontWeight: 600, marginBottom: 6 } }, '基本信息'),
-                        h('div', { style: viewerCss.infoRow },
-                            h('span', { style: viewerCss.infoKey }, '模型名称'),
-                            h('span', { style: viewerCss.infoValue }, String(props.name || '')),
-                            h('button', { style: viewerCss.copy, title: '复制', onClick: () => copyText('name', String(props.name || '')) }, copied === 'name' ? '✓' : '⧉'),
-                        ),
-                        h('div', { style: viewerCss.infoRow },
-                            h('span', { style: viewerCss.infoKey }, metrics.closed ? '体积' : '类型'),
-                            h('span', { style: viewerCss.infoValue },
-                                metrics.closed
-                                    ? formatNumber(metrics.volume) + ' mm³'
-                                    : '片体 / 开放网格（无体积）'),
-                            metrics.closed
-                                ? h('button', { style: viewerCss.copy, title: '复制', onClick: () => copyText('volume', formatNumber(metrics.volume)) }, copied === 'volume' ? '✓' : '⧉')
-                                : null,
-                        ),
-                        h('div', { style: viewerCss.infoRow },
-                            h('span', { style: viewerCss.infoKey }, '表面积'),
-                            h('span', { style: viewerCss.infoValue }, formatNumber(metrics.area) + ' mm²'),
-                            h('button', { style: viewerCss.copy, title: '复制', onClick: () => copyText('area', formatNumber(metrics.area)) }, copied === 'area' ? '✓' : '⧉'),
-                        ),
-                        h('div', { style: viewerCss.infoRow },
-                            h('span', { style: viewerCss.infoKey }, '包围盒'),
-                            h('span', { style: viewerCss.infoValue },
-                                metrics.size.map((value) => Number(value).toFixed(2)).join(' × ') + ' mm'),
-                        ),
-                        h('div', { style: viewerCss.infoRow },
-                            h('span', { style: viewerCss.infoKey }, '三角面'),
-                            h('span', { style: viewerCss.infoValue }, String(metrics.triangles)),
-                        ))
-                    : null,
-                clipMode >= 0
-                    ? h('div', { style: viewerCss.clip },
-                        h('div', null, '剖切 · ' + clipNames[clipMode + 1] + ' 轴'),
-                        h('input', {
-                            type: 'range', min: -1, max: 1, step: 0.01, value: clipValue,
-                            style: viewerCss.slider,
-                            onChange: (event) => setClipValue(Number(event.target.value)),
-                        }))
-                    : null,
-                flags.toolbar
-                    ? h('div', { style: viewerCss.bar },
-                        barButtons.map(([label, active, handler, title]) => h('button', {
-                            key: label,
-                            type: 'button',
-                            title,
-                            style: active ? Object.assign({}, viewerCss.barButton, viewerCss.barButtonOn) : viewerCss.barButton,
-                            onClick: handler,
-                        }, label)))
-                    : h('button', {
-                        type: 'button',
-                        style: Object.assign({}, viewerCss.barButton, viewerCss.barButtonOn, {
-                            position: 'absolute', right: 12, bottom: 12, background: 'rgba(255,255,255,0.94)',
-                            border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 2px 10px rgba(0,0,0,0.10)',
-                        }),
-                        onClick: () => toggle('toolbar'),
-                    }, '展开工具条'));
-        }
-
-        function NxIcon(props) {
-            const size = Number(props && props.size) || 18;
-            return h('svg', {
-                viewBox: '0 0 24 24', width: size, height: size, 'aria-hidden': true,
-                style: { display: 'block', pointerEvents: 'none', flex: '0 0 auto' },
-            },
-            h('rect', { x: 1, y: 1, width: 22, height: 22, rx: 6, fill: '#2f7dd1' }),
-            h('path', {
-                d: 'M6.4 16.8V7.2L10.6 16.8V7.2',
-                fill: 'none', stroke: '#ffffff', strokeWidth: 1.9, strokeLinecap: 'round', strokeLinejoin: 'round',
-            }),
-            h('path', {
-                d: 'M14.2 7.2L19.4 16.8M19.4 7.2L14.2 16.8',
-                fill: 'none', stroke: '#ffffff', strokeWidth: 1.9, strokeLinecap: 'round', strokeLinejoin: 'round',
-            }));
-        }
-
-        /** Shows the viewer's crash instead of an empty white box. */
         class ViewerBoundary extends React.Component {
             constructor(props) {
                 super(props);
@@ -1141,6 +683,34 @@ window.__ModuleLoader__.load({
                 }
                 return this.props.children;
             }
+        }
+
+        /** 实时预览：直接嵌 WebGL 页面（lib/preview.html），整页归它自己，不需要外层滚动。 */
+        function LiveFrame(props) {
+            const [url, setUrl] = React.useState((props && props.url) || '');
+            React.useEffect(() => {
+                if (url) return undefined;
+                let alive = true;
+                fetch(api('/dsh-nx/live3d/base'), { cache: 'no-store' })
+                    .then((r) => r.json())
+                    .then((j) => { if (alive && j && j.origin) setUrl(j.origin + '/dsh-nx/live3d/'); })
+                    .catch(() => {});
+                return () => { alive = false; };
+            }, [url]);
+            if (!url) {
+                return h('div', { style: { padding: '18px 16px', fontSize: 12.5, opacity: 0.7, lineHeight: 1.6 } },
+                    '实时预览地址还没拿到。确认 NX 会话在跑，并且 /dsh-nx/live3d/base 返回了 origin。');
+            }
+            return h('iframe', {
+                src: url,
+                title: 'NX 实时预览',
+                style: {
+                    display: 'block', width: '100%', height: '100%',
+                    minHeight: 320, border: '0', background: '#14161a',
+                    flex: '1 1 auto',
+                },
+                allow: 'fullscreen',
+            });
         }
 
         /**
@@ -1202,7 +772,6 @@ window.__ModuleLoader__.load({
             const [partPath, setPartPath] = React.useState('');
             const [preview, setPreview] = React.useState(null);
             const [pageView, setPageView] = React.useState(false);
-            const [viewerDebug, setViewerDebug] = React.useState('');
             /** Outcome of the last action: { ok, command, ms, text, file }. */
             const [outcome, setOutcome] = React.useState(null);
             /** Drawing sheet size used by 建图纸 / 打印 PDF / 明细表 / 批量出图. */
@@ -1290,31 +859,21 @@ window.__ModuleLoader__.load({
                 return base;
             }, [sheetSize, bomLang, bomColumns]);
 
-            const openPreview = React.useCallback(async (file) => {                setPreview({ name: file.name, loading: true });
+            const openPreview = React.useCallback(async (file) => {
+                setPreview({ name: file.name, loading: true });
                 try {
-                    const response = await fetch(api('/dsh-nx/preview'), {
+                    // 预览=实时：让 NX 打开这个文件，面板里的 iframe 就是我正在看的那个模型。
+                    const response = await fetch(api('/dsh-nx/open'), {
                         method: 'POST',
                         headers: { 'content-type': 'application/json' },
                         body: JSON.stringify({ path: file.path }),
                     });
                     const body = await response.json();
                     if (body && body.ok === true) {
-                        const entry = {
-                            name: file.name,
-                            url: body.stl,
-                            triangles: body.triangles,
-                            bytes: body.bytes,
-                            cached: body.cached === true,
-                            ms: body.ms,
-                            // The server may have adopted a part that is already open in NX when the
-                            // path did not resolve (a URL-encoded or workspace-relative name):
-                            // say so instead of silently previewing a different file.
-                            note: body.note || '',
-                        };
-                        setPreview(entry);
+                        setPreview({ name: file.name, url: 'live', note: body.path || '' });
                         setPageView(true);
                     } else {
-                        setPreview({ name: file.name, error: String(body && body.error ? body.error : '预览失败') });
+                        setPreview({ name: file.name, error: String(body && body.error ? body.error : '打开失败') });
                     }
                 }
                 catch (error) {
@@ -1376,44 +935,13 @@ window.__ModuleLoader__.load({
                                 textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                             },
                         }, preview.name),
-                        h('span', { style: { flex: '0 0 auto', fontSize: 11, opacity: 0.65, whiteSpace: 'nowrap' } },
-                            String(preview.triangles || 0) + ' 面 · ' + bytes(preview.bytes)
-                            + ' · ' + (viewerDebug || '未渲染')),
+                        h('span', { style: { flex: '0 0 auto', fontSize: 11, opacity: 0.65, whiteSpace: 'nowrap' } }, '实时'),
                     ),
-                    h('div', { style: { flex: '0 0 auto', padding: 6 } },
-                        // The full-height ("fill") mode depended on the panel constraining its
-                        // height, and in this sidebar tab it does not: the canvas collapsed to
-                        // nothing. Use the same fixed-height frame the inline viewer has always
-                        // used, and let the page scroll instead.
+                    h('div', { style: { flex: '1 1 auto', minHeight: 0, padding: 6, display: 'flex' } },
                         h(ViewerBoundary, null,
-                            h(NxViewer, { url: preview.url, name: preview.name, onDebug: setViewerDebug }))),
+                            h(LiveFrame, null))),
                 );
             }
-
-            /** Path of the file an action wrote, as a compact chip with the two useful buttons. */
-            const fileChip = (file) => {
-                if (!file || !file.path) return null;
-                const name = String(file.path).split(/[\\/]/).pop();
-                return h('div', {
-                    style: {
-                        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-                        marginTop: 8, padding: '6px 9px', borderRadius: 8,
-                        border: '1px solid rgba(63,163,77,0.45)', background: 'rgba(63,163,77,0.10)',
-                    },
-                },
-                    h('span', { style: css.mono }, name),
-                    file.note ? h('span', { style: css.dim }, file.note) : null,
-                    h('span', { style: Object.assign({}, css.dim, { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }) }, file.path),
-                    PREVIEWABLE.test(name)
-                        ? h('button', {
-                            style: css.button,
-                            title: '在这个面板里旋转查看',
-                            onClick: () => { void openPreview({ path: file.path, name }); },
-                        }, '预览')
-                        : null,
-                    h('button', { style: css.button, onClick: () => { void revealFile({ path: file.path }); } }, '文件夹'),
-                );
-            };
 
             const busySeconds = busySince ? Math.max(0, Math.round((now - busySince) / 1000)) : 0;
             const recentCut = Date.now() - 120000;
@@ -1428,6 +956,22 @@ window.__ModuleLoader__.load({
                                 ? (probe ? (probe.release ?? '') + (probe.isBatch ? ' · batch' : '') + (probe.uptimeSeconds ? ' · 在线 ' + Math.round(probe.uptimeSeconds) + ' s' : '') : '会话运行中')
                                 : '会话未启动（首个操作会启动，约 25 秒）'),
                     ),
+                    h('button', {
+                        style: css.button,
+                        title: '在侧边栏打开实时预览（需先运行 nxstream\\live.py）',
+                        onClick: () => {
+                            const open = (url, note) => {
+                                setPreview({ live: true, name: '实时预览', url: url || '', note: note || null });
+                                setPageView(true);
+                            };
+                            if (!openLivePreviewRef) { open('', 'openLivePreviewRef 未初始化：client.js 不是新版或 apply() 没跑到'); return; }
+                            openLivePreviewRef().then((url) => {
+                                open(url, url ? null : '取不到私有端口地址：/dsh-nx/live3d/base 返回空（preview.js 未生效？）');
+                            }).catch((error) => {
+                                open('', String((error && error.message) || error));
+                            });
+                        },
+                    }, '实时预览'),
                     h('button', {
                         style: busy ? css.buttonBusy : css.button,
                         onClick: () => { void refresh(true); },
@@ -1610,7 +1154,7 @@ window.__ModuleLoader__.load({
                                 : null,
                             h('button', { style: css.button, onClick: () => setPreview(null) }, '关闭')),
                         preview.loading
-                            ? h('div', { style: css.dim }, '正在用 NX 转成 STL 预览…（首次 10–40 秒，之后走缓存）')
+                            ? h('div', { style: css.dim }, '正在让 NX 打开这个零件…')
                             : null,
                         preview.error ? h('div', { style: css.bad }, '预览失败：' + preview.error) : null,
                         preview.note
@@ -1618,9 +1162,7 @@ window.__ModuleLoader__.load({
                             : null,
                         preview.url
                             ? h('div', { style: Object.assign({}, css.dim, { marginTop: 6 }) },
-                                String(preview.triangles || 0) + ' 三角面 · ' + bytes(preview.bytes)
-                                + (preview.cached ? ' · 缓存命中' : ' · 转换 ' + Math.round((preview.ms || 0) / 1000) + ' s')
-                                + ' · 已在「NX 预览」标签页打开')
+                                '已切换 NX 工作部件 · 正在「NX 预览」标签页实时显示')
                             : null)
                     : null,
                 actionLog.length
@@ -1660,6 +1202,9 @@ window.__ModuleLoader__.load({
         /** Set by apply(): switches the right column to a tab kind. Returns false when it cannot. */
         let openTabRef = null;
 
+        /** Set by apply(): opens the live-preview page in a sidebar browser tab. */
+        let openLivePreviewRef = null;
+
         /** Show an entry in the dedicated viewer tab; false when this build has no such tab. */
         function openViewerPage(entry) {
             pendingView = entry || null;
@@ -1669,30 +1214,11 @@ window.__ModuleLoader__.load({
 
         /** Model viewer page — a full-height tab of its own, no page inside it to scroll. */
         function NxViewerPage() {
-            const [entry, setEntry] = React.useState(pendingView);
-            React.useEffect(() => { setEntry(pendingView); }, []);
-            if (!entry || !entry.url) {
-                return h('div', { style: { padding: '18px 16px', fontSize: 12.5, opacity: 0.7 } },
-                    '没有待预览的模型。回到「NX 控制台」，在最近产物里点「预览」。');
-            }
-            return h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, padding: '10px 10px 8px' } },
-                h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 } },
-                    h('span', { style: { flex: 1, fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
-                    h('span', { style: { fontSize: 11, opacity: 0.65 } },
-                        String(entry.triangles || 0) + ' 面 · ' + bytes(entry.bytes)),
-                ),
-                h('div', { style: { flex: '0 0 auto' } },
-                    h(ViewerBoundary, null,
-                        h(NxViewer, { url: entry.url, name: entry.name }))),
-            );
+            /* 整页交给实时预览页面，本 tab 不再自带工具栏与信息卡。 */
+            return h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 } },
+                h(LiveFrame, null));
         }
 
-        /**
-         * A file link inside the conversation arrives as a dsh-resource address, not a Windows
-         * path: dsh-resource://file/session/session-<id>/<path relative to the workspace>.
-         * NX can only open a real file, so rebuild the absolute path from the workspace root
-         * the document-preview props carry.
-         */
         function prtSourcePath(props) {
             const raw = (props && (props.path
                 || (props.customData && props.customData.path)
@@ -1714,19 +1240,20 @@ window.__ModuleLoader__.load({
             return roots[0].replace(/[\\/]+$/, '') + '\\' + tail;
         }
 
-        /** Viewer for a .prt opened from a conversation file link: NX turns it into an STL, we draw it. */
+        /** Viewer for a .prt opened from a conversation file link: NX opens it, we stream its mesh. */
         function NxFileViewer(props) {
             const source = prtSourcePath(props);
-            const [state, setState] = React.useState({ phase: 'loading', url: '', error: '' });
+            const [state, setState] = React.useState({ phase: 'loading', error: '' });
 
             React.useEffect(() => {
                 if (!source) {
-                    setState({ phase: 'error', url: '', error: '这一页没有拿到文件路径' });
+                    setState({ phase: 'error', error: '这一页没有拿到文件路径' });
                     return undefined;
                 }
                 let alive = true;
-                setState({ phase: 'loading', url: '', error: '' });
-                fetch(api('/dsh-nx/preview'), {
+                setState({ phase: 'loading', error: '' });
+                // 不再导出 STL：让 NX 把这个文件变成工作部件，随后的 iframe 直接显示它的实时网格。
+                fetch(api('/dsh-nx/open'), {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ path: source }),
@@ -1735,27 +1262,27 @@ window.__ModuleLoader__.load({
                     .then((data) => {
                         if (!alive) return;
                         if (!data || !data.ok) {
-                            setState({ phase: 'error', url: '', error: (data && data.error) || '预览失败' });
+                            setState({ phase: 'error', error: (data && data.error) || '打开失败' });
                             return;
                         }
-                        setState({ phase: 'ready', url: api(data.stl), error: '' });
+                        setState({ phase: 'ready', error: '' });
                     })
                     .catch((error) => {
-                        if (alive) setState({ phase: 'error', url: '', error: String((error && error.message) || error) });
+                        if (alive) setState({ phase: 'error', error: String((error && error.message) || error) });
                     });
                 return () => { alive = false; };
             }, [source]);
 
             if (state.phase === 'loading') {
                 return h('div', { style: { padding: '18px 16px', fontSize: 12.5, opacity: 0.75 } },
-                    '正在用 NX 把模型转成预览…（首次 2–40 秒，之后走缓存）');
+                    '正在让 NX 打开这个零件…');
             }
             if (state.phase === 'error') {
                 return h('div', { style: { padding: '18px 16px', fontSize: 12.5, color: '#c34a3f', whiteSpace: 'pre-wrap' } },
-                    'NX 预览失败：' + state.error);
+                    'NX 打开失败：' + state.error);
             }
-            return h('div', { style: { padding: '10px 10px 8px' } },
-                h(ViewerBoundary, null, h(NxViewer, { url: state.url, name: source })));
+            return h('div', { style: { padding: '6px', display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 } },
+                h(ViewerBoundary, null, h(LiveFrame, null)));
         }
 
         /** Document-preview body: same viewer, addressed by a file address instead of a path. */
@@ -1835,6 +1362,20 @@ window.__ModuleLoader__.load({
                         if (layout && typeof layout.openRightbar === 'function') layout.openRightbar(true, false);
                     } catch { /* layout unavailable in this client build */ }
                     return false;
+                };
+
+                /* 实时预览：把 http://127.0.0.1:8890/ 开成侧边栏的 browser tab。
+                   和 openTabRef 一样由 apply() 赋值，面板（外层作用域）通过 ref 调用。 */
+                /* 实时网格：面板内的 NxViewer 直接去要网格。
+                   api() 是主进程代理的路径（dsh-app:// 协议带 token 转发给本地 server），
+                   所以这里不需要私有端口 —— 私有端口只给浏览器 tab 那种"直接访问"的场景用。 */
+                openLivePreviewRef = async () => {
+                    try {
+                        const res = await fetch(api('/dsh-nx/live3d/base'), { cache: 'no-store' });
+                        const j = await res.json();
+                        if (j && j.origin) return j.origin + '/dsh-nx/live3d/';
+                    } catch { /* 私有端口没起来时退到空串，页面会显示提示 */ }
+                    return '';
                 };
 
                 /* The type itself: a page kind, offered as a card on the right Sidebar's guide.

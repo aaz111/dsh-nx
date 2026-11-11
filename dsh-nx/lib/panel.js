@@ -47,8 +47,6 @@ const PANEL_COMMANDS = new Set([
 const ARTEFACT = /\.(prt|step|stp|iges|igs|stl|pdf|csv|png|svg|json|bdf|f06)$/i
 
 /** Formats the panel can turn into a mesh preview. */
-const PREVIEWABLE = /\.(prt|step|stp|iges|igs|stl)$/i
-
 const MAX_BODY = 64 * 1024
 
 function send(res, status, payload) {
@@ -340,7 +338,7 @@ export function registerPanelRoutes({ webServer, bridge, outputDir }) {
 
   routes.push({
     kind: 'exact',
-    path: '/dsh-nx/preview',
+    path: '/dsh-nx/open',
     async handler(req, res) {
       if (req.method !== 'POST') {
         send(res, 405, { ok: false, error: 'POST required' })
@@ -354,137 +352,18 @@ export function registerPanelRoutes({ webServer, bridge, outputDir }) {
         return
       }
       const requested = String(body.path ?? '')
-      if (!PREVIEWABLE.test(requested)) {
-        send(res, 400, { ok: false, error: 'preview needs a .prt, .step, .stp, .iges, .igs or .stl file' })
+      if (!requested) {
+        send(res, 400, { ok: false, error: 'path required' })
         return
       }
-      const root = resolve(outputDir)
-      // Any part on this machine can be previewed: the panel only ever reads the file through NX
-      // and writes the mesh into its own cache folder, so the source stays untouched.
-      let sourcePath = await resolveRequested(String(body.path ?? ''))
-      let info
-      let adopted = ''
+      // 预览改成实时渲染了：这里只让 NX 把这个文件变成当前工作部件，
+      // 面板随后的 iframe 指向 /dsh-nx/live3d/，直接显示它的实时网格。
       try {
-        info = await stat(sourcePath)
-      } catch {
-        // The part may already be open in NX under that exact file name (agents often hand over a
-        // workspace-relative path such as "enclosure/上壳.prt"). Ask the session which part it has
-        // and preview that one instead of telling the user the file is gone. The name may still be
-        // percent-encoded here, so try the raw and the decoded leaf.
-        let decoded = requested
-        try {
-          decoded = decodeURIComponent(requested)
-        } catch {
-          // keep the raw text
-        }
-        for (const name of [basename(sourcePath), basename(decoded)]) {
-          const open = await openPartNamed(name)
-          if (!open) continue
-          try {
-            info = await stat(open)
-            sourcePath = open
-            adopted = open
-            break
-          } catch {
-            info = undefined
-          }
-        }
-        if (!info) {
-          // Say what was actually looked for: a percent-encoded name is the common false alarm,
-          // and a bare "no such file" reads as if the panel lost the part.
-          const hint = decoded !== requested ? ` (the name arrived URL-encoded; also tried ${decoded})` : ''
-          send(res, 404, { ok: false, error: `no such file: ${sourcePath}${hint}`, requested, resolved: sourcePath })
-          return
-        }
-      }
-      if (!info.isFile()) {
-        send(res, 400, { ok: false, error: `not a file: ${sourcePath}` })
-        return
-      }
-
-      // Only a part or an already-tessellated mesh can be previewed. Handing NX an IGES or
-      // STEP file made it create a part of that name (File already exists) and NX cannot open
-      // an STL as a part at all (First parameter is invalid) - both used to surface as
-      // "预览失败" on files that were perfectly fine.
-      if (!/\.(prt|stl)$/i.test(sourcePath)) {
-        send(res, 200, {
-          ok: false,
-          error: `只能预览 .prt 或 .stl（${extname(sourcePath) || '无扩展名'} 请用「文件夹」打开）`,
-          source: sourcePath,
-        })
-        return
-      }
-
-      const folder = join(root, 'panel', 'preview')
-      const leaf = basename(sourcePath, extname(sourcePath)).replace(/[\\/:*?"<>|]/g, '_')
-      // The v3 prefix retires meshes cached before the renderer was fixed: v2 previews were
-      // exported at NX's default 0.058 mm / 18 degrees, coarse enough that a thread became a
-      // stack of flat rings. Cache keys carry the version so the finer mesh is actually used.
-      const cacheName = `v4-${leaf}-${Math.round(info.mtimeMs)}-${info.size}.stl`
-      const cachePath = join(folder, cacheName)
-      const url = `/dsh-nx/preview-file?name=${encodeURIComponent(cacheName)}`
-      const adoptedNote = adopted ? `previewed the part already open in NX (${adopted})` : ''
-
-      try {
-        const cached = await stat(cachePath)
-        send(res, 200, {
-          ok: true,
-          cached: true,
-          triangles: await countTriangles(cachePath),
-          bytes: cached.size,
-          ms: 0,
-          stl: url,
-          source: sourcePath,
-          note: adoptedNote,
-        })
-        return
-      } catch {
-        // not converted yet
-      }
-
-      const started = Date.now()
-      try {
-        await mkdir(folder, { recursive: true })
-        if (/\.stl$/i.test(sourcePath)) {
-          // Already a mesh: hand it straight to the viewer, no NX round trip needed.
-          await copyFile(sourcePath, cachePath)
-        } else {
-          await bridge.request('open', { path: sourcePath }, { timeoutMs: 180000 })
-          await bridge.request('export', {
-            format: 'stl',
-            path: cachePath,
-            // Every body, not the exporter's default (the last one): a sheet-metal style part
-            // is often several unstitched faces, and a preview showing one of them is a lie.
-            bodies: 'all',
-            // Finer than the translator's default so threads and fillets survive into the mesh.
-            tolerance: 0.02,
-            angle: 8,
-          }, { timeoutMs: 300000 })
-        }
-        const written = await stat(cachePath)
-        const triangles = await countTriangles(cachePath)
-        if (triangles === 0) {
-          // A zero-triangle mesh is a broken preview, not a picture: say so instead of
-          // handing the viewer a file it will fail to parse.
-          send(res, 200, {
-            ok: false,
-            error: '这个网格是空的（0 个三角面）：重新导出一次，或先在 NX 里打开该零件/装配',
-            source: sourcePath,
-          })
-          return
-        }
-        send(res, 200, {
-          ok: true,
-          cached: false,
-          triangles,
-          bytes: written.size,
-          ms: Date.now() - started,
-          stl: url,
-          source: sourcePath,
-          note: adoptedNote,
-        })
+        const sourcePath = await resolveRequested(requested)
+        await bridge.request('open', { path: sourcePath }, { timeoutMs: 180000 })
+        send(res, 200, { ok: true, path: sourcePath })
       } catch (error) {
-        send(res, 200, { ok: false, error: String(error?.message ?? error), source: sourcePath })
+        send(res, 200, { ok: false, error: String(error?.message ?? error) })
       }
     },
   })
@@ -529,30 +408,6 @@ export function registerPanelRoutes({ webServer, bridge, outputDir }) {
     },
   })
 
-  routes.push({
-    kind: 'exact',
-    path: '/dsh-nx/preview-file',
-    async handler(req, res) {
-      const url = new URL(req.url ?? '/dsh-nx/preview-file', 'http://localhost')
-      const name = basename(String(url.searchParams.get('name') ?? ''))
-      const folder = join(resolve(outputDir), 'panel', 'preview')
-      if (!name || name !== String(url.searchParams.get('name') ?? '')) {
-        send(res, 400, { ok: false, error: 'bad preview name' })
-        return
-      }
-      let buffer
-      try {
-        buffer = await readFile(join(folder, name))
-      } catch {
-        send(res, 404, { ok: false, error: 'no preview for that name' })
-        return
-      }
-      res.statusCode = 200
-      res.setHeader('content-type', 'application/octet-stream')
-      res.setHeader('cache-control', 'no-store')
-      res.end(buffer)
-    },
-  })
 
   const disposers = routes.map((route) => webServer.register(route))
   return () => {
@@ -727,14 +582,3 @@ function round(value) {
 }
 
 /** Triangle count from a binary STL header (84 bytes in) so the panel can label the mesh. */
-async function countTriangles(file) {
-  try {
-    const buffer = await readFile(file)
-    if (buffer.byteLength < 84) return 0
-    const declared = buffer.readUInt32LE(80)
-    const fits = 84 + declared * 50 <= buffer.byteLength
-    return fits ? declared : Math.floor((buffer.byteLength - 84) / 50)
-  } catch {
-    return 0
-  }
-}

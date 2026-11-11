@@ -918,7 +918,7 @@ def main():
         except Exception as error:
             out("text size not set:", repr(error))
         builder.Text.SetEditorText(lines)
-        builder.Origin.OriginPoint = pnt(float(at[0]), float(at[1]), float(at[2]))
+        builder.Origin.OriginPoint = pnt(float(at[0]), float(at[1]), float(at[2]) if len(at) > 2 else 0.0)
         builder.Validate()
         note = builder.Commit()
         return {"lines": len(lines), "text": lines, "font": used, "size": size,
@@ -1939,7 +1939,7 @@ def main():
         return pick_view(part, wanted)
 
     def place_origin(builder, view, at):
-        builder.Origin.OriginPoint = pnt(float(at[0]), float(at[1]), float(at[2]))
+        builder.Origin.OriginPoint = pnt(float(at[0]), float(at[1]), float(at[2]) if len(at) > 2 else 0.0)
         if view is not None:
             try:
                 builder.Origin.AnnotationView = view
@@ -4155,7 +4155,7 @@ def main():
             return {"part": fix_text(part.Leaf), "workLayer": work, "layers": rows}
         if action == "move":
             number = layer_number(args.get("layer"))
-            chosen = bodies_of(part, args.get("bodies"))
+            chosen = pick_bodies(part, args.get("bodies"))
             if not chosen:
                 raise RuntimeError("this part has no bodies to move")
             layers.MoveDisplayableObjects(number, chosen)
@@ -5069,7 +5069,7 @@ def main():
             break
         files = sorted(glob.glob(os.path.join(REQ, "*.json")))
         if not files:
-            time.sleep(0.05)
+            time.sleep(0.004)
             continue
         for path in files:
             try:

@@ -15,6 +15,7 @@ import { NxBridge } from './bridge.js';
 import { createNxTools } from './tools.js';
 import { GUIDE } from './prompt.js';
 import { registerPanelRoutes } from './panel.js';
+import { registerPreviewRoutes } from './preview.js';
 
 /** Artefact folder when the host configures none: a private place under the home directory. */
 function resolveOutputDir(config) {
@@ -56,9 +57,19 @@ export function apply(ctx, config = {}) {
                 bridge,
                 outputDir,
             });
+            const disposePreview = registerPreviewRoutes({
+                webServer: panelCtx.webServer,
+                bridge,
+            });
             panelCtx.effect(() => () => {
                 try {
                     dispose();
+                }
+                catch {
+                    // the server is already gone
+                }
+                try {
+                    disposePreview();
                 }
                 catch {
                     // the server is already gone
