@@ -1,8 +1,10 @@
 # dsh-nx
+[![dsh.so risk](https://cdn.dsh.so/badge/dsh-nx-3.svg)](https://www.dsh.so/artifact/dsh-nx-3/?ref=badge)
 
 **Siemens NX 插件 · DeepSeek Harness 侧栏工作台**
 
 1.在后台 NX 会话中完成三维建模、工程图纸、格式导出、装配管理与有限元分析，全部通过工具调用或侧栏面板驱动，无需手动操作 NX 图形界面。甚至可以用许愿式的要求建模，但是ai生成不保证完全准确，生成结果需人工复核。
+
 2.不要尝试用复杂工图直接给ds，这是LLM而不是专业识图模型，ds的多模态并不算强，这也是目前插件效率的一大限制
 
 ---
