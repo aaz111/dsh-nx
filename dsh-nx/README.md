@@ -57,6 +57,7 @@
 | 特征阵列残留 | 阵列后留下 0 体积 sheet body | 导出时用 `bodies` 指定实体索引 |
 | 装配求解器自动移动组件 | NX 批处理仅注册约束不求解 | 用 `nx_assembly_move` 手动定位 |
 | 真正共形网格 | 需 Simcenter 网格器 | 用 `draped` 网格（体积误差 −0.9%，孔壁仍为体素形状） |
+| 粗网格体积偏差 | `elementSize` 默认取最大尺寸/40；20 mm 厚的板取 8 mm 时体积少算 **−4.8%**（实测 169674.7 vs 178174.4 mm³） | 厚度方向至少铺 3 层单元，即 `elementSize ≤ 板厚/3`，再逐步加密看结果收敛 |
 | Nastran 默认内存 14 GB | 桌面机不足 | 已改用 `mem=2000mb` |
 
 ---
@@ -70,6 +71,8 @@
 # 方式二：从源码安装
 pnpm add file:<解压目录>/dsh-nx
 ```
+
+**DSH 版本支持**：`engines.dsh` 为 `>=0.1.0-rc.7`；`@deepseek-ai/dsh-tools` 的 peer 覆盖 0.0.x / 0.1.x / 0.2.x，并单列 `>=0.2.2-rc.1 <0.3.0-0` 一档以容纳 0.2.2-rc.* 这类预发布。DSH 判定插件兼容性时**优先看 `engines.dsh`，有它时 peer 不参与**；插件市场卡片会把两条取交集，因此 `dsh-tools` peer 的上界决定卡片是否标红。若卡片仍显示红色但 `engines.dsh` 已满足，可直接从 GitHub 安装，或用 `dsh plugin allow-version dsh-nx@0.5.0 <运行时版本>` 放行该精确版本对。
 
 **前提**：本地已安装 Siemens NX。安装路径由 `nxHome` 配置项或 `UGII_BASE_DIR` 环境变量指定；两者都不给时自动探测：先校验 `UGII_BASE_DIR` 确实是 NX 根，再扫常见 Siemens 目录及其两层子目录，最后扫所有存在盘符根（A:–Z:）的一层子目录，取第一个带 `NXBIN\run_journal.exe` 的目录。FE 工具额外需要 `simulation` / `nastran` 许可证。
 

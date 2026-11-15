@@ -685,6 +685,42 @@ window.__ModuleLoader__.load({
             }
         }
 
+        /**
+         * Top-level safety net for the console itself. Without it a render error anywhere in
+         * NxPanel unmounts the whole tree and the tab goes blank with nothing to read - which is
+         * exactly what a long-running 批量出图 looked like afterwards.
+         */
+        class PanelBoundary extends React.Component {
+            constructor(props) {
+                super(props);
+                this.state = { err: null };
+            }
+
+            static getDerivedStateFromError(err) {
+                return { err };
+            }
+
+            render() {
+                if (this.state.err) {
+                    const message = String((this.state.err && (this.state.err.stack || this.state.err.message)) || this.state.err);
+                    return h('div', { style: { padding: 14, fontSize: 12.5, lineHeight: 1.7, color: 'inherit' } },
+                        h('div', { style: { fontWeight: 600, marginBottom: 6 } }, 'NX 控制台渲染出错'),
+                        h('pre', {
+                            style: {
+                                whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5,
+                                margin: '0 0 10px', padding: 8, borderRadius: 6, maxHeight: 280, overflow: 'auto',
+                                background: 'rgba(127,127,127,0.12)',
+                            },
+                        }, message),
+                        h('button', {
+                            style: { padding: '5px 12px', borderRadius: 6, cursor: 'pointer' },
+                            onClick: () => this.setState({ err: null }),
+                        }, '重试'));
+                }
+                return this.props.children;
+            }
+        }
+
         /** 实时预览：直接嵌 WebGL 页面（lib/preview.html），整页归它自己，不需要外层滚动。 */
         function LiveFrame(props) {
             const [url, setUrl] = React.useState((props && props.url) || '');
@@ -718,27 +754,31 @@ window.__ModuleLoader__.load({
          * one whitelisted bridge command; `file: true` marks the ones that hand back a document,
          * whose path the panel then shows as a chip instead of leaving the user to hunt for it.
          */
-        /** Sheet sizes the 建图纸 button offers; the same choice is passed to PDF / 明细表. */
-        const SHEET_SIZE_CHOICES = ['A4', 'A3', 'A2', 'A1'];
+        /** Sheet sizes offered for part drawings and for assembly drawings (A4 … A0). */
+        const SHEET_SIZE_CHOICES = ['A4', 'A3', 'A2', 'A1', 'A0'];
 
         /** BOM columns the 明细表 + CSV button can draw (ids match nxworker BOM_FIELDS). */
         const BOM_COLUMN_CHOICES = [
             { id: 'no', zh: '序号', en: 'No.' },
-            { id: 'part', zh: '零件号', en: 'Part No.' },
+            { id: 'part', zh: '代号', en: 'Part No.' },
             { id: 'name', zh: '名称', en: 'Name' },
             { id: 'qty', zh: '数量', en: 'Qty' },
+            { id: 'material', zh: '材料', en: 'Material' },
+            { id: 'note', zh: '备注', en: 'Remarks' },
             { id: 'unit', zh: '单重', en: 'Unit kg' },
             { id: 'total', zh: '总重', en: 'Total kg' },
             { id: 'volume', zh: '体积', en: 'Vol mm3' },
         ];
-        const BOM_DEFAULT_COLUMNS = ['no', 'part', 'name', 'qty', 'unit', 'total'];
+        /** The sheet carries no weights unless the user ticks them back on. */
+        const BOM_DEFAULT_COLUMNS = ['no', 'part', 'name', 'qty', 'material', 'note'];
 
         const ACTION_GROUPS = [
             {
                 title: '出图',
+                sizeKind: 'part',
                 items: [
-                    { label: '建图纸', command: 'drawing', needsSize: true, title: '没有图纸时新建；已有带视图的图纸则直接复用' },
-                    { label: '打印 PDF', command: 'pdf', file: true, needsSize: true, title: '打印有内容的图纸（没有图纸时自动建一张）' },
+                    { label: '建图纸', command: 'drawing', needsSize: true, sizeKind: 'part', title: '没有图纸时新建；已有带视图的图纸则直接复用' },
+                    { label: '打印 PDF', command: 'pdf', file: true, needsSize: true, sizeKind: 'part', title: '打印有内容的图纸（没有图纸时自动建一张）' },
                     { label: '剖视图', command: 'section_view', args: { parent: 'TOP', start: [-10, 40, 10], end: [130, 40, 10] }, title: '在俯视图上沿 y=40 剖一刀，放不下时自动换剖切类型' },
                     { label: '技术要求', command: 'note', args: { text: '技术要求\n1. 未注圆角 R2。\n2. 去毛刺锐边。', at: [18, 268] }, title: '在当前图纸左上角写一段中文技术要求' },
                 ],
@@ -754,12 +794,13 @@ window.__ModuleLoader__.load({
             },
             {
                 title: '装配',
+                sizeKind: 'asm',
                 items: [
                     { label: '装配清单 + CSV', command: 'asm_list', file: true, title: '列出组件并写出 _components.csv' },
-                    { label: '明细表 + CSV', command: 'bom_table', file: true, needsSize: true, needsBom: true, title: '在图纸上画明细表，同时写出同名的 _bom.csv' },
+                    { label: '明细表 + CSV', command: 'bom_table', file: true, needsSize: true, sizeKind: 'asm', needsIso: true, needsBom: true, title: '在图纸上画明细表，同时写出同名的 _bom.csv' },
                     { label: '间隙检查', command: 'asm_clearance', args: { tolerance: 0.01 } },
                     { label: '爆炸图', command: 'explode', args: { distance: 20, stagger: 6 }, title: '把组件沿 Z 逐级炸开（可再用命令还原）' },
-                    { label: '批量出图', command: 'batch_drawings', file: true, needsSize: true, title: '给装配里每个零件出一张图纸并打印 PDF' },
+                    { label: '批量出图', command: 'batch_drawings', file: true, needsSize: true, sizeKind: 'part', needsIso: true, timeoutMs: 900000, title: '给装配里每个零件出一张图纸并打印 PDF（零件图尺寸，慢，单件约 20 秒）' },
                 ],
             },
         ];
@@ -774,8 +815,11 @@ window.__ModuleLoader__.load({
             const [pageView, setPageView] = React.useState(false);
             /** Outcome of the last action: { ok, command, ms, text, file }. */
             const [outcome, setOutcome] = React.useState(null);
-            /** Drawing sheet size used by 建图纸 / 打印 PDF / 明细表 / 批量出图. */
-            const [sheetSize, setSheetSize] = React.useState('A3');
+            /** Part drawings default to A4, assembly drawings to A3. */
+            const [partSheetSize, setPartSheetSize] = React.useState('A4');
+            const [asmSheetSize, setAsmSheetSize] = React.useState('A3');
+            /** Whether the assembly drawing also carries an isometric view. */
+            const [asmIso, setAsmIso] = React.useState(false);
             /** BOM table options: header language and which columns to draw. */
             const [bomLang, setBomLang] = React.useState('zh');
             const [bomColumns, setBomColumns] = React.useState(BOM_DEFAULT_COLUMNS);
@@ -807,7 +851,7 @@ window.__ModuleLoader__.load({
                 return () => { window.clearInterval(timer); };
             }, [refresh]);
 
-            const run = React.useCallback(async (command, args) => {
+            const run = React.useCallback(async (command, args, timeoutMs) => {
                 const label = command + ' ' + (args && args.format ? args.format : '');
                 setBusy(label);
                 setBusySince(Date.now());
@@ -815,7 +859,12 @@ window.__ModuleLoader__.load({
                     const response = await fetch(api('/dsh-nx/action'), {
                         method: 'POST',
                         headers: { 'content-type': 'application/json' },
-                        body: JSON.stringify({ command, args: args || {}, path: partPath.trim() }),
+                        body: JSON.stringify({
+                            command,
+                            args: args || {},
+                            path: partPath.trim(),
+                            timeoutMs: Number(timeoutMs) > 0 ? Number(timeoutMs) : 0,
+                        }),
                     });
                     const body = await response.json();
                     const record = {
@@ -851,13 +900,18 @@ window.__ModuleLoader__.load({
              */
             const argsFor = React.useCallback((item) => {
                 const base = Object.assign({}, item.args || {});
-                if (item.needsSize) base.size = sheetSize;
+                if (item.needsSize) {
+                    base.size = item.sizeKind === 'asm' ? asmSheetSize : partSheetSize;
+                }
+                if (item.needsIso) {
+                    base.views = { top: true, front: true, right: true, isometric: asmIso };
+                }
                 if (item.needsBom) {
                     base.language = bomLang;
                     base.columns = bomColumns.slice();
                 }
                 return base;
-            }, [sheetSize, bomLang, bomColumns]);
+            }, [partSheetSize, asmSheetSize, asmIso, bomLang, bomColumns]);
 
             const openPreview = React.useCallback(async (file) => {
                 setPreview({ name: file.name, loading: true });
@@ -878,6 +932,28 @@ window.__ModuleLoader__.load({
                 }
                 catch (error) {
                     setPreview({ name: file.name, error: String(error && error.message ? error.message : error) });
+                }
+            }, []);
+
+            /**
+             * 打开 = 系统文件对话框选 .prt，选中后填进路径并在面板里实时预览。
+             * 手打路径既容易错，也没有存在感；这里直接问 Windows 要文件。
+             */
+            const pickPart = React.useCallback(async () => {
+                setFailure(null);
+                try {
+                    const response = await fetch(api('/dsh-nx/pick'), { method: 'POST' });
+                    const body = await response.json();
+                    if (!body || body.cancelled === true) return;
+                    if (body.ok !== true || !body.path) {
+                        setFailure(String(body && body.error ? body.error : '没有选中文件'));
+                        return;
+                    }
+                    // 打开只负责拿到路径；看模型是「预览」按钮的事。
+                    setPartPath(body.path);
+                }
+                catch (error) {
+                    setFailure(String(error && error.message ? error.message : error));
                 }
             }, []);
 
@@ -943,6 +1019,31 @@ window.__ModuleLoader__.load({
                 );
             }
 
+            /** Path of the file an action wrote, as a compact chip with the two useful buttons. */
+            const fileChip = (file) => {
+                if (!file || !file.path) return null;
+                const name = String(file.path).split(/[\\/]/).pop();
+                return h('div', {
+                    style: {
+                        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                        marginTop: 8, padding: '6px 9px', borderRadius: 8,
+                        border: '1px solid rgba(63,163,77,0.45)', background: 'rgba(63,163,77,0.10)',
+                    },
+                },
+                    h('span', { style: css.mono }, name),
+                    file.note ? h('span', { style: css.dim }, file.note) : null,
+                    h('span', { style: Object.assign({}, css.dim, { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }) }, file.path),
+                    PREVIEWABLE.test(name)
+                        ? h('button', {
+                            style: css.button,
+                            title: '在这个面板里旋转查看',
+                            onClick: () => { void openPreview({ path: file.path, name }); },
+                        }, '预览')
+                        : null,
+                    h('button', { style: css.button, onClick: () => { void revealFile({ path: file.path }); } }, '文件夹'),
+                );
+            };
+
             const busySeconds = busySince ? Math.max(0, Math.round((now - busySince) / 1000)) : 0;
             const recentCut = Date.now() - 120000;
 
@@ -961,8 +1062,9 @@ window.__ModuleLoader__.load({
                         title: '在侧边栏打开实时预览（需先运行 nxstream\\live.py）',
                         onClick: () => {
                             const open = (url, note) => {
+                                // 同样落在面板内的预览卡片里，不切整页 —— 整页 iframe 一旦加载
+                                // 失败就是一张白纸，返回按钮也跟着没了。
                                 setPreview({ live: true, name: '实时预览', url: url || '', note: note || null });
-                                setPageView(true);
                             };
                             if (!openLivePreviewRef) { open('', 'openLivePreviewRef 未初始化：client.js 不是新版或 apply() 没跑到'); return; }
                             openLivePreviewRef().then((url) => {
@@ -1010,16 +1112,20 @@ window.__ModuleLoader__.load({
                             value: partPath,
                             onChange: (event) => setPartPath(event.target.value),
                             onKeyDown: (event) => {
-                                if (event.key === 'Enter' && partPath.trim()) void run('open', { path: partPath.trim() });
+                                if (event.key === 'Enter' && partPath.trim()) {
+                                    const target = partPath.trim();
+                                    void openPreview({ path: target, name: target.split(/[\\/]/).pop() });
+                                }
                             },
                         }),
                         h('button', {
                             style: busy ? css.buttonBusy : css.button,
-                            onClick: () => { if (partPath.trim()) void run('open', { path: partPath.trim() }); },
+                            title: '打开文件对话框选择 .prt，选中后在面板里实时预览',
+                            onClick: () => { void pickPart(); },
                         }, '打开'),
                         h('button', {
                             style: css.button,
-                            title: '把这个模型转成 STL，在面板里旋转查看',
+                            title: '预览输入框里的路径（不弹对话框）',
                             onClick: () => {
                                 const target = partPath.trim();
                                 if (!target) return;
@@ -1041,15 +1147,27 @@ window.__ModuleLoader__.load({
                 h('div', { style: css.card },
                     ACTION_GROUPS.map((group) => h('div', { key: group.title, style: { marginBottom: 10 } },
                         h('div', { style: css.sectionTitle }, group.title),
-                        group.items.some((item) => item.needsSize)
+                        group.sizeKind
                             ? h('div', { style: Object.assign({}, css.row, { gap: 6, marginBottom: 7 }) },
-                                h('span', { style: Object.assign({}, css.dim, { fontSize: 11 }) }, '图纸'),
-                                SHEET_SIZE_CHOICES.map((size) => h('button', {
-                                    key: size,
-                                    style: sheetSize === size ? css.chipOn : css.chipOff,
-                                    title: '图纸尺寸 ' + size,
-                                    onClick: () => setSheetSize(size),
-                                }, size)),
+                                h('span', { style: Object.assign({}, css.dim, { fontSize: 11 }) },
+                                    group.sizeKind === 'asm' ? '装配图纸尺寸' : '零件图纸尺寸'),
+                                SHEET_SIZE_CHOICES.map((size) => {
+                                    const on = (group.sizeKind === 'asm' ? asmSheetSize : partSheetSize) === size;
+                                    return h('button', {
+                                        key: size,
+                                        style: on ? css.chipOn : css.chipOff,
+                                        title: (group.sizeKind === 'asm' ? '装配图纸尺寸 ' : '零件图纸尺寸 ') + size,
+                                        onClick: () => (group.sizeKind === 'asm' ? setAsmSheetSize(size) : setPartSheetSize(size)),
+                                    }, size);
+                                }),
+                                group.items.some((item) => item.needsIso)
+                                    ? h('button', {
+                                        key: 'iso',
+                                        style: asmIso ? css.chipOn : css.chipOff,
+                                        title: '装配图是否附一张轴测图',
+                                        onClick: () => setAsmIso(!asmIso),
+                                    }, '轴测图')
+                                    : null,
                             )
                             : null,
                         h('div', { style: css.group },
@@ -1057,7 +1175,7 @@ window.__ModuleLoader__.load({
                                 key: item.label,
                                 style: busy ? css.buttonBusy : css.button,
                                 title: item.title || item.command,
-                                onClick: () => { void run(item.command, argsFor(item)); },
+                                onClick: () => { void run(item.command, argsFor(item), item.timeoutMs); },
                             }, item.label)),
                         ),
                         group.items.some((item) => item.needsBom)
@@ -1148,7 +1266,7 @@ window.__ModuleLoader__.load({
                             preview.url
                                 ? h('button', {
                                     style: Object.assign({}, css.button, { flex: '0 0 auto', whiteSpace: 'nowrap' }),
-                                    title: '在面板里全屏查看这个模型',
+                                    title: '整页查看这个模型',
                                     onClick: () => { setPageView(true); setFailure(null); },
                                 }, '预览')
                                 : null,
@@ -1162,7 +1280,7 @@ window.__ModuleLoader__.load({
                             : null,
                         preview.url
                             ? h('div', { style: Object.assign({}, css.dim, { marginTop: 6 }) },
-                                '已切换 NX 工作部件 · 正在「NX 预览」标签页实时显示')
+                                '已切换 NX 工作部件 · 点「预览」整页查看')
                             : null)
                     : null,
                 actionLog.length
@@ -1342,8 +1460,10 @@ window.__ModuleLoader__.load({
                     } catch { /* this client build has no such slot */ }
                 }
 
-                mount('sidebar.right.pane.tab', { name: 'sidebar.right.pane.tab', key: TAB_ID }, () => h(NxPanel, null));
-                mount('sidebar.right.pane.tab', { name: 'sidebar.right.pane.tab', key: VIEW_TAB_ID }, () => h(NxViewerPage, null));
+                mount('sidebar.right.pane.tab', { name: 'sidebar.right.pane.tab', key: TAB_ID },
+                    () => h(PanelBoundary, null, h(NxPanel, null)));
+                mount('sidebar.right.pane.tab', { name: 'sidebar.right.pane.tab', key: VIEW_TAB_ID },
+                    () => h(PanelBoundary, null, h(NxViewerPage, null)));
 
                 /** Opening the viewer page is just a tab switch; the entry rides in pendingView. */
                 openTabRef = (kind) => {

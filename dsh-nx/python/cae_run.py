@@ -25,8 +25,6 @@ NX_INSTALL_ROOTS = (
     r"D:\Program Files\Siemens",
     r"D:\Program Files\Siemens PLM Software",
     r"D:\Siemens",
-    r"D:\software",
-    r"D:\apps",
 )
 
 

@@ -15,7 +15,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { copyFile, mkdir, readdir, readFile, stat } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 
 /** Commands the panel may fire. Motion and raw `exec` stay out on purpose. */
@@ -118,6 +119,60 @@ async function recentArtefacts(base, limit = 12, depth = 3) {
  * @param {string} options.outputDir  folder the panel lists artefacts from
  * @returns {() => void} disposer removing both routes
  */
+/**
+ * Native Windows "open file" dialog for a .prt, so the panel never asks the user to type a
+ * path by hand. Resolves to the picked path, or '' when the dialog is cancelled.
+ *
+ * The path travels through a UTF-8 file instead of stdout: the console code page turned a
+ * Chinese file name into ???? on the way back. powershell.exe (5.1) is used rather than pwsh 7
+ * because Windows Forms needs an STA thread and the 5.1 host starts one by default.
+ */
+async function pickPartFile() {
+  const outFile = join(tmpdir(), `dsh-nx-pick-${process.pid}-${Date.now()}.txt`)
+  try {
+    await writeFile(outFile, '', 'utf8')
+  } catch (error) {
+    throw error
+  }
+  const script = [
+    'Add-Type -AssemblyName System.Windows.Forms | Out-Null',
+    '$dlg = New-Object System.Windows.Forms.OpenFileDialog',
+    "$dlg.Title = '选择 NX 零件 (.prt)'",
+    "$dlg.Filter = 'NX 零件 (*.prt)|*.prt|所有文件 (*.*)|*.*'",
+    '$dlg.Multiselect = $false',
+    '$dlg.RestoreDirectory = $true',
+    "if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [System.IO.File]::WriteAllText($env:DSH_NX_PICK_OUT, $dlg.FileName, (New-Object System.Text.UTF8Encoding $false)) }",
+    '$dlg.Dispose()',
+  ].join('; ')
+  await new Promise((resolvePromise, reject) => {
+    let child
+    try {
+      child = spawn('powershell.exe', ['-NoProfile', '-STA', '-Command', script], {
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'ignore'],
+        env: Object.assign({}, process.env, { DSH_NX_PICK_OUT: outFile }),
+      })
+    } catch (error) {
+      reject(error)
+      return
+    }
+    child.on('error', reject)
+    child.on('close', () => resolvePromise())
+  })
+  let picked = ''
+  try {
+    picked = (await readFile(outFile, 'utf8')).replace(/^\uFEFF/, '').trim()
+  } catch {
+    picked = ''
+  }
+  try {
+    await unlink(outFile)
+  } catch {
+    /* the temp file is harmless; a failed cleanup must not fail the pick */
+  }
+  return picked
+}
+
 export function registerPanelRoutes({ webServer, bridge, outputDir }) {
   const lastActions = []
 
@@ -184,7 +239,12 @@ export function registerPanelRoutes({ webServer, bridge, outputDir }) {
         return
       }
       const requested = body.args && typeof body.args === 'object' ? body.args : {}
-      const timeoutMs = Number(body.timeoutMs) > 0 ? Number(body.timeoutMs) : 240000
+      // Batch drafting opens and draws every component, so it needs room to breathe; anything
+      // else keeps the old 4 minute ceiling. Cap at 30 minutes so a hung request cannot park a
+      // connection for the rest of the session.
+      const fallbackTimeout = command === 'batch_drawings' ? 900000 : 240000
+      const requestedTimeout = Number(body.timeoutMs) > 0 ? Number(body.timeoutMs) : fallbackTimeout
+      const timeoutMs = Math.min(Math.max(requestedTimeout, 15000), 1800000)
       const started = Date.now()
       const record = { command, at: started, ok: false, ms: 0, summary: '', file: null }
 
@@ -335,6 +395,21 @@ export function registerPanelRoutes({ webServer, bridge, outputDir }) {
     }
     return direct
   }
+
+  routes.push({
+    kind: 'exact',
+    path: '/dsh-nx/pick',
+    async handler(req, res) {
+      try {
+        const picked = await pickPartFile()
+        send(res, 200, picked
+          ? { ok: true, path: picked }
+          : { ok: false, cancelled: true })
+      } catch (error) {
+        send(res, 200, { ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  })
 
   routes.push({
     kind: 'exact',
@@ -525,7 +600,9 @@ function summarise(command, result) {
     case 'bom_table':
       return `table ${result.rows ?? 0} row(s), ${result.quantity ?? 0} part(s), ${round(result.mass)} kg`
     case 'batch_drawings':
-      return `batch ${result.drawn ?? 0}/${result.parts ?? 0} drawing(s) printed`
+      return `batch ${result.drawn ?? 0}/${result.parts ?? 0} drawing(s) printed` +
+        ` · ${result.files?.length ?? result.drawn ?? 0} pdf` +
+        ` · ${result.models?.length ?? 0} prt`
     case 'section_view':
       return `section ${result.view?.name ?? ''} of ${result.parent ?? ''} (${result.type ?? ''})`
     case 'note':
@@ -569,7 +646,8 @@ function artefactOf(command, result) {
     case 'asm_list':
       return file(result.csv, result.csvBytes ? `${result.csvBytes} B` : '清单')
     case 'batch_drawings':
-      return file(result.outDir, `${result.drawn ?? 0}/${result.parts ?? 0} 份`)
+      return file(result.outDir, `${result.drawn ?? 0}/${result.parts ?? 0} 份` +
+        ` · ${result.files?.length ?? result.drawn ?? 0} pdf · ${result.models?.length ?? 0} prt`)
     default:
       return null
   }

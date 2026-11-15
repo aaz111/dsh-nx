@@ -439,6 +439,90 @@ def main():
             "solidCounts": counts,
         }
 
+    def views_on_sheet(part, sheet):
+        """Visible draft views of a sheet, falling back to the part's own collection.
+
+        A sheet the builder has just created does not always list its views yet, and the layout
+        then had nothing to place while the sheet did carry a full set of views.
+        """
+        def visible(views):
+            return [v for v in views if view_summary(v)["visible"] > 0]
+
+        try:
+            found = visible(sheet.GetDraftingViews())
+            if found:
+                return found
+        except Exception:
+            pass
+        try:
+            return visible(part.DraftingViews)
+        except Exception:
+            return []
+
+    # UF_MODL_ask_face_data face types that mean "there is a hole or a pocket in here".
+    INTERNAL_FACE_TYPES = (16, 17)   # cylindrical, conical
+
+    def has_internal_features(part):
+        """True when the solid carries a cylindrical or conical face (a hole, a bore, a pocket).
+
+        SolidFaceType 2 is a bounded cylinder and 3 a bounded cone. A fillet leaves short
+        cylindrical strips as well, so this errs towards adding a section view rather than
+        hiding an internal feature; a plain block without holes or blends has neither.
+        """
+        try:
+            bodies = list(part.Bodies)
+        except Exception:
+            return False
+        for body in bodies:
+            try:
+                faces = list(body.GetFaces())
+            except Exception:
+                continue
+            for face in faces:
+                try:
+                    kind = face.SolidFaceType
+                except Exception:
+                    continue
+                # NX hands back a FaceFaceTypeMemberType object; its `value` is the int code.
+                try:
+                    kind = kind.value
+                except Exception:
+                    pass
+                try:
+                    if int(kind) in (2, 3):
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    def ensure_section_view(part, sheet):
+        """Section through the middle of the part, added when it has internal features.
+
+        The cut runs along X through the mid-plane of the part on the front view, which is the
+        projection the holes show up in; the layout that follows places it like any other view.
+        """
+        if not has_internal_features(part):
+            return {"created": False, "reason": "no internal feature (no cylindrical face)"}
+        try:
+            box = measure(part)
+            lo = box.get("bboxMin") or [0.0, 0.0, 0.0]
+            hi = box.get("bboxMax") or [0.0, 0.0, 0.0]
+            x0, x1 = float(lo[0]) - 5.0, float(hi[0]) + 5.0
+            zc = (float(lo[2]) + float(hi[2])) / 2.0
+        except Exception as error:
+            return {"created": False, "reason": "no bounding box: %s" % error}
+        try:
+            result = cmd_section_view({"parent": "FRONT",
+                                       "start": [x0, 0.0, zc],
+                                       "end": [x1, 0.0, zc]})
+        except Exception as error:
+            out("auto section failed:", repr(error))
+            return {"created": False, "reason": str(error)[:200]}
+        return {"created": True, "parent": "FRONT",
+                "view": result.get("view", {}).get("name"),
+                "cut": [[round(x0, 2), 0.0, round(zc, 2)],
+                        [round(x1, 2), 0.0, round(zc, 2)]]}
+
     def cmd_drawing(args):
         part = display_part()
         # Assemblies open lightweight: without loading them the fallback layout has no bounding
@@ -447,7 +531,13 @@ def main():
             part.LoadFully()
         except Exception:
             pass
-        size = str(args.get("size") or "A3").upper()
+        # Part drawings default to A4, assembly drawings to A3: a single part carries three
+        # views and a section, an assembly needs room for the parts list above the title block.
+        try:
+            is_assembly = len(list(part.Bodies)) == 0
+        except Exception:
+            is_assembly = False
+        size = str(args.get("size") or ("A3" if is_assembly else "A4")).upper()
         projection = str(args.get("projection") or "first").lower()
         auto_scale = args.get("autoScale", True)
         use_template = args.get("template", True)
@@ -467,6 +557,8 @@ def main():
             # The wizard's auto-scale owns the ratio, so an explicit one has to use our layout.
             layout_hint = "fitted"
 
+        empty_sheet = None
+        sheet = None
         if reuse:
             paper = SHEET_SIZES.get(size)
             for existing in list(part.DraftingDrawingSheets):
@@ -476,6 +568,15 @@ def main():
                 except Exception:
                     populated = []
                 if not populated:
+                    # A brand-new part already carries one blank sheet; drawing into it keeps
+                    # the part at a single sheet instead of leaving an empty page behind.
+                    if empty_sheet is None:
+                        try:
+                            if paper is None or (abs(float(existing.Length) - paper[0]) < 1.0
+                                                 and abs(float(existing.Height) - paper[1]) < 1.0):
+                                empty_sheet = existing
+                        except Exception:
+                            empty_sheet = existing
                     continue
                 # Only reuse a sheet of the size that was asked for: picking A2 after an A3
                 # sheet exists otherwise silently keeps printing on the small sheet.
@@ -487,6 +588,11 @@ def main():
                         same = True
                     if not same:
                         continue
+                # refresh: keep the sheet but re-run the rules on it (re-rule an old drawing)
+                if args.get("refresh"):
+                    sheet = existing
+                    out("refreshing sheet:", fix_text(existing.Name), len(populated), "view(s)")
+                    break
                 out("reusing sheet:", fix_text(existing.Name), len(populated), "view(s)")
                 return {"sheet": sheet_info(existing), "sheets": sheet_list(part),
                         "reused": True,
@@ -494,8 +600,16 @@ def main():
 
         angle = NX.Drawings.DrawingSheetProjectionAngleType.ThirdAngle if projection.startswith("t") \
             else NX.Drawings.DrawingSheetProjectionAngleType.FirstAngle
-        sheet = None
-        if use_template:
+        if sheet is None:
+            sheet = empty_sheet
+        if sheet is not None:
+            try:
+                sheet.ActivateForSketching()
+                out("drawing into the existing sheet:", fix_text(sheet.Name))
+            except Exception as error:
+                out("could not activate the empty sheet:", repr(error))
+                sheet = None
+        if sheet is None and use_template:
             tpl = os.path.join(s.GetEnvironmentVariableValue("UGII_BASE_DIR"),
                                "DRAFTING", "templates", "Drawing-%s-Size-template.prt" % size)
             if os.path.exists(tpl):
@@ -532,13 +646,19 @@ def main():
         layout = layout_hint or str(args.get("layout") or "fitted").lower()
         created = []
         plan_ok = False
+        if sheet is not None and args.get("refresh"):
+            # Re-ruling an existing drawing: keep the views that are already there instead of
+            # dropping a second set on top of them.
+            created = views_on_sheet(part, sheet)
+            plan_ok = bool(created)
+            out("refresh: keeping", len(created), "existing view(s)")
         if layout == "wizard":
             wiz = part.DraftingViews.CreateViewCreationWizardBuilder()
             # The drawing layout part must be named explicitly, otherwise Commit
             # raises "Drawing part file and drawing layout part file differ."
             wiz.Part = part
             wiz.BaseView = str(args.get("baseView") or "TOP")
-            flags = args.get("views") or {"front": True, "right": True, "isometric": True}
+            flags = args.get("views") or {"front": True, "right": True}
             for key, prop in (("top", "TopView"), ("front", "FrontView"), ("right", "RightView"),
                               ("left", "LeftView"), ("back", "BackView"), ("bottom", "BottomView"),
                               ("isometric", "IsometricView"), ("trimetric", "TrimetricView")):
@@ -554,7 +674,7 @@ def main():
                 out("view wizard failed:", repr(e))
                 plan_ok = False
             try:
-                created = [v for v in sheet.GetDraftingViews() if view_summary(v)["visible"] > 0]
+                created = views_on_sheet(part, sheet)
             except Exception:
                 created = []
         if not created or not plan_ok:
@@ -566,7 +686,7 @@ def main():
             width = height = 0.0
             try:
                 extent = []
-                if len(part.Bodies) > 0:
+                if len(list(part.Bodies)) > 0:
                     extent = measure(part).get("bboxSize") or []
                 elif getattr(part, "ComponentAssembly", None) is not None:
                     shown = component_bodies_in(part)
@@ -630,7 +750,9 @@ def main():
                     raise RuntimeError("views was given but no known name was set true (known: %s)"
                                        % ", ".join(k for k, _ in order))
             else:
-                wanted = [("FRONT", 0), ("TOP", 1), ("RIGHT", 2), ("ISOMETRIC", 3)]
+                # No isometric unless the caller asks for it: it eats the largest block on the
+                # sheet without carrying a single dimension.
+                wanted = [("FRONT", 0), ("TOP", 1), ("RIGHT", 2)]
             placed = []
             for index, (name, slot) in enumerate(wanted):
                 mv = model_views.get(name)
@@ -654,23 +776,97 @@ def main():
                     placed.append(name)
                 except Exception as e:
                     out("base view failed:", name, repr(e))
-            created = [v for v in sheet.GetDraftingViews() if view_summary(v)["visible"] > 0]
+            created = views_on_sheet(part, sheet)
             out("explicit base views:", ", ".join(placed))
 
-        # Views come out of the builder wherever the template happens to put them; grid them
-        # from their own frames so the sheet is filled evenly and the title block stays clear.
-        if created and str(args.get("layout") or "").lower() not in ("none", "keep"):
+        layout_report = None
+        section_report = None
+        frame_report = None
+        notes = []
+        layout_mode = str(args.get("layout") or "").lower()
+
+        # A part with a hole or a pocket gets a section through its middle: the drawing then
+        # shows the internal geometry instead of hiding it behind the outline.
+        if created and len(list(part.Bodies)) > 0 and args.get("section", True) is not False:
+            try:
+                section_report = ensure_section_view(part, sheet)
+                if section_report.get("created"):
+                    created = views_on_sheet(part, sheet)
+                else:
+                    notes.append("section: %s" % section_report.get("reason"))
+            except Exception as error:
+                notes.append("section: %r" % (error,))
+                out("auto section skipped:", repr(error))
+
+        # The views fill at least 40 % of the sheet with gaps of at least 10 % of its width.
+        if created and layout_mode not in ("none", "keep"):
             try:
                 reserve = args.get("reserveTitle")
-                auto_layout_views(sheet, created,
-                                  reserve=True if reserve is None else bool(reserve))
+                layout_report = layout_views_with_rules(
+                    sheet, created,
+                    reserve=True if reserve is None else bool(reserve),
+                    min_area=args.get("minViewArea"),
+                    gap_ratio=args.get("viewGap"))
+                created = views_on_sheet(part, sheet)
+                if layout_report and not layout_report.get("met"):
+                    notes.append(
+                        "layout: views cover %.1f %% of the sheet, %.0f %% required "
+                        "(%.0f mm gaps on %gx%g leave no room; a larger sheet or fewer views "
+                        "would be needed)"
+                        % (100.0 * layout_report.get("areaRatio", 0.0),
+                           100.0 * layout_report.get("target", LAYOUT_MIN_AREA),
+                           layout_report.get("gap", 0.0),
+                           float(sheet.Length), float(sheet.Height)))
             except Exception as e:
+                notes.append("layout: %r" % (e,))
                 out("auto layout skipped:", repr(e))
+
+        # Every sheet carries a real GB frame and title block in the bottom-right corner; the
+        # frame a NX template carries does not print, so it is drawn as sheet curves here.
+        if args.get("frame", True) is not False and sheet is not None:
+            scale_text = None
+            try:
+                if created:
+                    drawn_ratio = true_scale(created[0])
+                    if drawn_ratio >= 1:
+                        scale_text = "%g:1" % round(drawn_ratio, 2)
+                    else:
+                        scale_text = "1:%g" % round(1.0 / drawn_ratio, 2)
+            except Exception:
+                scale_text = None
+            try:
+                frame_report = cmd_drawing_frame({
+                    "partName": args.get("partName"),
+                    "drawingNo": args.get("drawingNo"),
+                    "material": args.get("material"),
+                    "designer": args.get("designer"),
+                    "checker": args.get("checker"),
+                    "company": args.get("company"),
+                    "scale": scale_text,
+                })
+            except Exception as error:
+                notes.append("frame: %r" % (error,))
+                out("frame skipped:", repr(error))
 
         info = {"sheet": sheet_info(part.DraftingDrawingSheets.CurrentDrawingSheet),
                 "sheets": sheet_list(part),
                 "reused": False,
-                "views": [view_summary(v) for v in created]}
+                "views": [view_summary(v) for v in created],
+                "layout": layout_report,
+                "section": section_report,
+                "frame": frame_report,
+                "notes": notes}
+        if notes:
+            # A drawing that could not follow the rules has to say so somewhere a caller can
+            # read without opening the log of the NX process.
+            try:
+                with open(os.path.join(OUT_DIR, "drawing_notes.log"), "a",
+                          encoding="utf-8") as handle:
+                    handle.write("%s  %s  ::  %s\n"
+                                 % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    fix_text(part.Leaf), " | ".join(notes)))
+            except Exception:
+                pass
         return info
 
     def cmd_pdf(args):
@@ -713,7 +909,7 @@ def main():
             # after opening a part, then insist on a real sheet before touching its Name.
             try:
                 cmd_drawing({"size": args.get("size") or "A3", "projection": "first",
-                             "views": {"top": True, "front": True, "isometric": True}})
+                             "views": {"top": True, "front": True, "right": True}})
             except Exception:
                 pass
             sheets = [sh for sh in list(part.DraftingDrawingSheets)
@@ -807,10 +1003,58 @@ def main():
         rx, ry, scale, ox, oy = view_frame(view)
         return rx + (float(x) + ox) * scale, ry + (float(y) + oy) * scale
 
-    def free_spot(part):
-        """A sheet point as far as possible from every view centre (crude auto placement)."""
+    def boxes_overlap(a, b):
+        """a, b: (x0, y0, x1, y1) rectangles on the sheet."""
+        return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+    def view_need(view, part=None, fallback=(130.0, 90.0)):
+        """Rough sheet-space size (w, h) of a view, used to keep a new frame on the paper.
+
+        A drawing view in this batch session exposes no BoundingBox, so the size comes from the
+        part's own extents scaled by the view ratio -- and the ratio has to be the real one from
+        UF, not view.Scale (which reads ~0.4 on a 1:1 view and made every frame look half size).
+        """
+        try:
+            scale = abs(float(true_scale(view))) or 1.0
+        except Exception:
+            scale = 1.0
+        size = fallback
+        if part is not None:
+            try:
+                box = measure(part)
+                lo = box.get("bboxMin") or [0.0, 0.0, 0.0]
+                hi = box.get("bboxMax") or [0.0, 0.0, 0.0]
+                width = abs(float(hi[0]) - float(lo[0]))
+                height = abs(float(hi[1]) - float(lo[1]))
+                if width > 0 and height > 0:
+                    size = (width, height)
+            except Exception:
+                size = fallback
+        return (size[0] * scale, size[1] * scale)
+
+    def free_spot(part, need=None, avoid_title_block=True):
+        """A sheet point where a view of about `need` mm still fits on the paper.
+
+        Choosing the point farthest from every view centre put a section view hard against
+        the right edge, so its frame ran past the printable area and the view printed empty.
+        Now the candidate frame has to stay inside the margins, clear of the GB title block
+        and off every existing view, with a bias towards the upper right.
+        """
         sheet = part.DraftingDrawingSheets.CurrentDrawingSheet
         width, height = float(sheet.Length), float(sheet.Height)
+        need = need or (130.0, 90.0)
+        try:
+            half_w = max(50.0, float(need[0]) * 0.5)
+            half_h = max(38.0, float(need[1]) * 0.5)
+        except Exception:
+            half_w, half_h = 65.0, 45.0
+        left, other, bottom, top = 25.0, 10.0, 10.0, 10.0
+        lo_x, hi_x = left + half_w, width - other - half_w
+        lo_y, hi_y = bottom + half_h, height - top - half_h
+        if hi_x <= lo_x:
+            lo_x = hi_x = width * 0.5
+        if hi_y <= lo_y:
+            lo_y = hi_y = height * 0.5
         taken = []
         for v in drafting_views(part):
             try:
@@ -818,17 +1062,36 @@ def main():
                 taken.append((float(r.X), float(r.Y)))
             except Exception:
                 pass
-        best, best_distance = (width - 70.0, 45.0), -1.0
-        y = 30.0
-        while y < height - 25.0:
-            x = 30.0
-            while x < width - 25.0:
-                distance = min([((x - tx) ** 2 + (y - ty) ** 2) ** 0.5 for tx, ty in taken] or [9.9e3])
-                if distance > best_distance:
-                    best, best_distance = (x, y), distance
-                x += 15.0
-            y += 15.0
-        return best
+        title_box = None
+        if avoid_title_block:
+            # GB title block sits on the bottom right: 180 x 56 mm.
+            title_box = (width - other - 180.0, bottom, width - other, bottom + 56.0)
+
+        def blocked(x, y):
+            box = (x - half_w, y - half_h, x + half_w, y + half_h)
+            if title_box is not None and boxes_overlap(box, title_box):
+                return True
+            for tx, ty in taken:
+                if boxes_overlap(box, (tx - half_w, ty - half_h, tx + half_w, ty + half_h)):
+                    return True
+            return False
+
+        candidates = []
+        y = lo_y
+        while y <= hi_y + 1e-9:
+            x = lo_x
+            while x <= hi_x + 1e-9:
+                if not blocked(x, y):
+                    distance = min([((x - tx) ** 2 + (y - ty) ** 2) ** 0.5
+                                    for tx, ty in taken] or [9.9e3])
+                    score = distance + 0.35 * (x - lo_x) + 0.5 * (y - lo_y)
+                    candidates.append((score, x, y))
+                x += 10.0
+            y += 10.0
+        if not candidates:
+            return min(max(width * 0.55, lo_x), hi_x), min(max(height * 0.55, lo_y), hi_y)
+        candidates.sort(reverse=True)
+        return candidates[0][1], candidates[0][2]
 
     def view_summary(view):
         return {
@@ -858,7 +1121,7 @@ def main():
         if kind not in mapping:
             raise RuntimeError("type must be one of %s" % ", ".join(sorted(mapping)))
 
-        at = args.get("at") or free_spot(part)
+        at = args.get("at") or free_spot(part, view_need(parent, part))
 
         def build(candidate):
             known = {v.Tag for v in drafting_views(part)}
@@ -930,7 +1193,7 @@ def main():
         builder.Scale.ScaleType = NX.Drawings.ViewScaleBuilderType.Ratio
         builder.Scale.Numerator = ratio
         builder.Scale.Denominator = 1.0
-        at = args.get("at") or free_spot(part)
+        at = args.get("at") or free_spot(part, view_need(parent, part))
         builder.Origin.Placement.Value = part.Points.CreatePoint(pnt(at[0], at[1], 0.0))
         builder.Validate()
         builder.Commit()
@@ -977,113 +1240,181 @@ def main():
                   "RIGHT": (1, 0), "BACK": (2, 0), "LEFT": (1, 1),
                   "ISOMETRIC": (2, 0), "TRIMETRIC": (2, 1), "DIMETRIC": (2, 1)}
 
-    def auto_layout_views(sheet, views, reserve=True, gap=14.0, pad=8.0):
-        """Re-place the created views on a grid built from their own frames.
+    # Drawing rules: every gap between views is at least 10 % of the sheet width, the block is
+    # spread evenly inside the frame, and the views are blown up as far as the sheet allows
+    # (min_area defaults to 0, so the search simply takes the largest scale that still fits).
+    LAYOUT_MIN_AREA = 0.0
+    LAYOUT_GAP_RATIO = 0.10
+    # Ratios tried from large to small; the first one that still fits AND reaches the area
+    # target wins, so a small part is blown up instead of leaving three quarters empty.
+    SCALE_LADDER = (5.0, 4.0, 3.0, 2.5, 2.0, 1.5, 1.25, 1.0, 0.8, 0.75, 0.6, 0.5,
+                    0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05, 0.02)
+    LAYOUT_ORDER = ("FRONT", "TOP", "RIGHT", "LEFT", "BACK", "BOTTOM",
+                    "ISOMETRIC", "TRIMETRIC", "DIMETRIC")
 
-        The slot of each view comes from its name (FRONT / TOP / RIGHT / ISOMETRIC ...), the
-        column width and row height from the largest frame in that band, and the whole block is
-        centred on the free area. When the title block (plus a bill of materials above it) sits
-        in the bottom-right corner the block is lifted and the layout retried until nothing
-        overlaps it.
-        """
+    def sheet_margins(width, height):
+        """GB frame margins: 25 mm binding edge on the left (20 small), 10 mm (5 small) elsewhere."""
+        large = width > 500.0
+        return (25.0 if large else 20.0), (10.0 if large else 5.0)
+
+    def view_boxes(views):
+        """Sheet-space boxes of the views, straight from NX."""
         uf = uf_session()
-        frames, slots = {}, {}
+        boxes = {}
         for view in views:
-            border = uf.Draw.AskViewBorders(view.Tag)
-            frames[view.Name] = [float(border[0]), float(border[1]),
-                                 float(border[2]), float(border[3])]
-            key = str(view.Name).split("@")[0].upper()
-            slots[view.Name] = VIEW_SLOTS.get(key)
-        if not frames:
-            return {}
-        # Views without a known slot (section views, details) go to the first free cell.
-        taken = {s for s in slots.values() if s}
-        spare = [(1, 1), (2, 1), (1, 2), (2, 2), (0, 3), (1, 3)]
-        for view in views:
-            if slots[view.Name] is None:
-                for cell in spare:
-                    if cell not in taken:
-                        slots[view.Name] = cell
-                        taken.add(cell)
-                        break
-                else:
-                    slots[view.Name] = (len(taken) % 3, len(taken) // 3)
+            try:
+                b = [float(v) for v in uf.Draw.AskViewBorders(view.Tag)]
+                boxes[view.Name] = (min(b[0], b[2]), min(b[1], b[3]),
+                                    max(b[0], b[2]), max(b[1], b[3]))
+            except Exception:
+                boxes[view.Name] = None
+        return boxes
 
-        col_ids = sorted({slots[v.Name][0] for v in views})
-        row_ids = sorted({slots[v.Name][1] for v in views})
-        col_of = {v.Name: col_ids.index(slots[v.Name][0]) for v in views}
-        row_of = {v.Name: row_ids.index(slots[v.Name][1]) for v in views}
+    def order_views(views):
+        """Projection order first, then sections, then details, then anything else."""
+        def rank(view):
+            head = str(view.Name).split("@")[0].upper()
+            if head in LAYOUT_ORDER:
+                return (0, LAYOUT_ORDER.index(head), head)
+            if head.startswith("SX"):
+                return (1, 0, head)
+            if head.startswith("DETAIL"):
+                return (2, 0, head)
+            return (3, 0, head)
+        return sorted(views, key=rank)
 
-        col_w = [0.0] * len(col_ids)
-        row_h = [0.0] * len(row_ids)
-        for view in views:
-            box = frames[view.Name]
-            col_w[col_of[view.Name]] = max(col_w[col_of[view.Name]], box[2] - box[0])
-            row_h[row_of[view.Name]] = max(row_h[row_of[view.Name]], box[3] - box[1])
+    def plan_grid(entries, sheet_w, sheet_h, gap, reserve_title, columns):
+        """Rows/columns of boxes inside the frame: (positions, feasible, view_area, block).
 
-        total_w = sum(col_w) + gap * (len(col_w) - 1)
-        total_h = sum(row_h) + gap * (len(row_h) - 1)
+        entries is [(name, width, height)] in placement order. Column widths and row heights
+        come from the largest box in that band, and the leftover space is divided equally into
+        the gaps so the block sits evenly on the sheet instead of hugging one corner.
+        """
+        if not entries:
+            return {}, False, 0.0, (0.0, 0.0)
+        rows = int(math.ceil(len(entries) / float(columns)))
+        col_w = [0.0] * columns
+        row_h = [0.0] * rows
+        for index, (_, width, height) in enumerate(entries):
+            col_w[index % columns] = max(col_w[index % columns], width)
+            row_h[index // columns] = max(row_h[index // columns], height)
+        block_w = sum(col_w) + gap * (columns - 1)
+        block_h = sum(row_h) + gap * (rows - 1)
+        binding, margin = sheet_margins(sheet_w, sheet_h)
+        # The views keep clear of the frame by at least 10 % of the usable sheet width.
+        usable_w = sheet_w - binding - margin
+        inset = max(2.0, 0.10 * usable_w)
+        x0, x1 = binding + inset, sheet_w - margin - inset
+        y0, y1 = margin + inset, sheet_h - margin - inset
+        if reserve_title:
+            # The GB title block is 180 x 56 in the bottom-right corner, so the views stay
+            # above it and the BOM table can hug its top edge.
+            y0 = max(y0, margin + 56.0 + gap * 0.5)
+        avail_w, avail_h = x1 - x0, y1 - y0
+        feasible = block_w <= avail_w + 1e-6 and block_h <= avail_h + 1e-6
+        extra_x = max(0.0, avail_w - block_w) / (columns + 1)
+        extra_y = max(0.0, avail_h - block_h) / (rows + 1)
+        positions = {}
+        top = y1 - extra_y
+        for row in range(rows):
+            row_bottom = top - row_h[row]
+            cursor_x = x0 + extra_x
+            for col in range(columns):
+                index = row * columns + col
+                if index >= len(entries):
+                    break
+                name = entries[index][0]
+                positions[name] = (cursor_x + col_w[col] / 2.0, row_bottom + row_h[row] / 2.0)
+                cursor_x += col_w[col] + gap + extra_x
+            top = row_bottom - gap - extra_y
+        view_area = sum(width * height for _, width, height in entries)
+        return positions, feasible, view_area, (block_w, block_h)
 
-        width = float(sheet.Length)
-        height = float(sheet.Height)
-        binding = 25.0
-        margin = 10.0 if width > 500.0 else 5.0
-        free_x0, free_x1 = binding + pad, width - margin - pad
-        free_y0, free_y1 = margin + pad, height - margin - pad
-        room_w, room_h = free_x1 - free_x0, free_y1 - free_y0
-        if total_w > room_w or total_h > room_h:
-            out("auto layout: %.0fx%.0f block does not fit %.0fx%.0f free area, keeping it inset"
-                % (total_w, total_h, room_w, room_h))
+    def layout_views_with_rules(sheet, views, reserve=True, min_area=None, gap_ratio=None,
+                                min_columns=2, max_columns=4):
+        """Scale the views up until they cover `min_area` of the sheet, then place them.
 
-        left = free_x0 + max(0.0, room_w - total_w) / 2.0
-        top = free_y1 - max(0.0, room_h - total_h) / 2.0
+        The scale ladder is walked from large to small; for each ratio the grid is tried with
+        2, 3 and then 4 columns and the first rung that both fits and reaches the area target
+        is applied. If no rung reaches it, the roomiest that fits is used and the shortfall is
+        reported in `areaRatio` / `met`.
+        """
+        width, height = float(sheet.Length), float(sheet.Height)
+        gap = (LAYOUT_GAP_RATIO if gap_ratio is None else float(gap_ratio)) * width
+        want = LAYOUT_MIN_AREA if min_area is None else float(min_area)
+        target_area = want * width * height
+        ordered = order_views(views)
+        boxes = view_boxes(ordered)
+        live = [(view, boxes[view.Name]) for view in ordered if boxes.get(view.Name)]
+        if not live:
+            return {"placed": {}, "areaRatio": 0.0, "target": want, "met": False,
+                    "gap": round(gap, 2), "note": "no view borders were readable"}
 
-        block_x0 = width - margin - 180.0 if reserve else free_x1 + 1.0
-        block_y1 = free_y0 + 156.0
+        base = {view.Name: (true_scale(view) or 1.0) for view, _ in live}
+        sizes = {view.Name: (box[2] - box[0], box[3] - box[1]) for view, box in live}
 
-        def offsets(shift):
-            xs, x = [], left
-            for column in col_w:
-                xs.append(x + column / 2.0)
-                x += column + gap
-            ys, y = [], top + shift
-            for band in row_h:
-                ys.append(y - band / 2.0)
-                y -= band + gap
-            return xs, ys
-
-        def clashes(shift):
-            xs, ys = offsets(shift)
-            for view in views:
-                box = frames[view.Name]
-                half_w = (box[2] - box[0]) / 2.0
-                half_h = (box[3] - box[1]) / 2.0
-                cx, cy = xs[col_of[view.Name]], ys[row_of[view.Name]]
-                x0, x1 = cx - half_w, cx + half_w
-                y0, y1 = cy - half_h, cy + half_h
-                if x1 > block_x0 and y0 < block_y1:
-                    return True
-                if y1 > free_y1 or y0 < free_y0 or x0 < free_x0 or x1 > free_x1:
-                    return True
-            return False
-
-        shift = 0.0
-        for step in (0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0):
-            if not clashes(step):
-                shift = step
+        best = None
+        chosen = None
+        for factor in SCALE_LADDER:
+            entries = [(view.Name, sizes[view.Name][0] * factor, sizes[view.Name][1] * factor)
+                       for view, _ in live]
+            for columns in range(min_columns, max_columns + 1):
+                if columns > len(entries):
+                    continue
+                positions, feasible, area, block = plan_grid(entries, width, height, gap,
+                                                             reserve, columns)
+                if not feasible:
+                    continue
+                if best is None or area > best[0]:
+                    best = (area, factor, columns, positions)
+                if area >= target_area:
+                    chosen = (area, factor, columns, positions)
+                    break
+            if chosen:
                 break
-        else:
-            shift = 0.0
 
-        xs, ys = offsets(shift)
+        pick = chosen or best
+        if pick is None:
+            return {"placed": {}, "areaRatio": 0.0, "target": want, "met": False,
+                    "gap": round(gap, 2),
+                    "note": "no scale on the ladder fits the views at the required gap"}
+
+        _, factor, columns, positions = pick
         placed = {}
-        for view in views:
-            x, y = xs[col_of[view.Name]], ys[row_of[view.Name]]
-            view.MoveView(NX.Point3d(x, y, 0.0))
-            placed[view.Name] = [round(x, 2), round(y, 2)]
-        out("auto layout on %gx%g sheet: %d view(s), %d column(s) x %d row(s), shift %g"
-            % (width, height, len(views), len(col_ids), len(row_ids), shift))
-        return placed
+        for view, _ in live:
+            ratio = base[view.Name] * factor
+            if abs(ratio - base[view.Name]) > 1e-6:
+                try:
+                    uf_session().Draw.SetViewScale(view.Tag, float(ratio))
+                except Exception as error:
+                    out("scale set failed:", view.Name, repr(error))
+            x, y = positions[view.Name]
+            try:
+                view.MoveView(NX.Point3d(float(x), float(y), 0.0))
+                placed[view.Name] = [round(float(x), 2), round(float(y), 2)]
+            except Exception as error:
+                out("view move failed:", view.Name, repr(error))
+
+        try:
+            after = view_boxes([view for view, _ in live])
+            real = sum((box[2] - box[0]) * (box[3] - box[1])
+                       for box in after.values() if box)
+        except Exception as error:
+            out("layout measure after moving failed:", repr(error))
+            real = 0.0
+        ratio_of_sheet = real / (width * height) if width and height else 0.0
+        out("layout: %d view(s), %d column(s), gap %.1f mm (%.0f%% of width), scale x%.3f, "
+            "views cover %.1f%% of %.0fx%.0f"
+            % (len(placed), columns, gap, 100.0 * gap / width, factor,
+               100.0 * ratio_of_sheet, width, height))
+        return {"placed": placed, "gap": round(gap, 2), "columns": columns,
+                "scaleFactor": round(factor, 4), "target": round(want, 4),
+                "areaRatio": round(ratio_of_sheet, 4), "met": ratio_of_sheet >= want - 1e-3}
+
+    def auto_layout_views(sheet, views, reserve=True, gap=None, pad=8.0):
+        """Backwards-compatible wrapper: apply the drawing rules and return where views landed."""
+        report = layout_views_with_rules(sheet, views, reserve=reserve)
+        return report.get("placed", {})
 
     def cmd_view_scale(args):
         part = display_part()
@@ -1173,7 +1504,7 @@ def main():
         cut = float(cut)
         scale = args.get("scale")
         scale = true_scale(parent) if scale is None else ratio_value(scale)
-        at = args.get("at") or list(free_spot(part))
+        at = args.get("at") or list(free_spot(part, view_need(parent, part)))
         at = (float(at[0]), float(at[1]))
 
         # Model X of the parent view's centre, so the cut point can be placed on the sheet.
@@ -2305,7 +2636,7 @@ def main():
         if not characteristic:
             raise RuntimeError("unknown characteristic %r — use one of: %s"
                                % (raw, ", ".join(sorted(FCF_CHARACTERISTICS))))
-        at = args.get("at") or free_spot(part)
+        at = args.get("at") or free_spot(part, (40.0, 25.0))
         view = annotation_view(part, args.get("view"))
         builder = part.Annotations.CreateDraftingFeatureControlFrameBuilder(
             NXOpen.Annotations.Gdt.Null)
@@ -2336,7 +2667,7 @@ def main():
             text_lines = [str(lines)]
         if not text_lines:
             raise RuntimeError("balloon text is required")
-        at = args.get("at") or free_spot(part)
+        at = args.get("at") or free_spot(part, (40.0, 25.0))
         size = float(args.get("size") or 5.0)
         view = annotation_view(part, args.get("view"))
         builder = part.Annotations.CreateDraftingNoteBuilder(None)
@@ -2356,7 +2687,7 @@ def main():
         """A surface finish (roughness) symbol: Ra value plus an optional process note."""
         part = display_part()
         value = str(args.get("value") or "3.2")
-        at = args.get("at") or free_spot(part)
+        at = args.get("at") or free_spot(part, (40.0, 25.0))
         view = annotation_view(part, args.get("view"))
         builder = part.Annotations.DraftingSurfaceFinishSymbol.CreateDraftingSurfaceFinishSymbolBuilder(None)
         builder.A1 = value
@@ -2407,7 +2738,7 @@ def main():
             tb_width = width - margin - binding
         if tb_height > height - margin * 2:
             tb_height = height - margin * 2
-        part_name = str(args.get("partName") or part.LeafName)
+        part_name = str(args.get("partName") or fix_text(part.Leaf))
         company = str(args.get("company") or "")
         drawing_no = str(args.get("drawingNo") or "")
         material = str(args.get("material") or "45")
@@ -2423,7 +2754,10 @@ def main():
         except Exception:
             scale = str(args.get("scale") or "1:1")
 
-        cjk = any(ord(ch) > 127 for ch in part_name + company + material)
+        # The title block labels are Chinese whatever the part is called, so the stroke font
+        # has to be loaded even for a purely ASCII part name — otherwise every label prints
+        # as a box in the PDF.
+        cjk = True
         font_index = None
         if cjk:
             try:
@@ -2474,25 +2808,33 @@ def main():
 
         box(tb_x0, tb_y0, tb_x1, tb_y1)
 
-        # 更改区（上，4 行）
+        # GB/T 10609.1 grid on the 180 x 56 block: change zone (4 rows x 7) above the signature
+        # zone (4 rows x 7) on the left, material / stage / weight / scale in the middle, and the
+        # name zone on the right with 18 / 21 / 9 / 8 mm rows.
+        CHANGE_X = (0.0, 11.0, 22.0, 40.0, 58.0, 72.0, 90.0)   # 标记 处数 分区 更改文件号 签名 年.月.日
+        MID_X = (90.0, 103.0, 110.0, 124.0)                    # 阶段标记 重量 比例
+        NAME_X = 124.0
         for y in (28.0, 35.0, 42.0, 49.0):
             h(y, 0.0, 90.0)
-        for x in (12.0, 24.0, 36.0, 65.0):
+        for x in CHANGE_X[1:-1]:
             v(x, 28.0, 56.0)
-        v(76.0, 49.0, 56.0)
-        # 签名区（下，4 行：设计 / 审核 / 工艺 / 批准）
         for y in (7.0, 14.0, 21.0):
             h(y, 0.0, 90.0)
-        for x in (24.0, 56.0):
+        for x in (22.0, 58.0):
             v(x, 0.0, 28.0)
         v(90.0, 0.0, 56.0)
-        # 中列：材料标记 / 阶段标记 / 重量 / 比例
-        for y in (14.0, 28.0, 42.0):
-            h(y, 90.0, 110.0)
-        v(110.0, 0.0, 56.0)
-        # 名称区：单位名称 / 图样名称 / 图样代号
-        for y in (21.0, 42.0):
-            h(y, 110.0, 180.0)
+        # material mark: 4 x 6.5 = 26 mm band from y = 30 up
+        h(30.0, 90.0, NAME_X)
+        for y in (36.5, 43.0, 49.5):
+            h(y, 90.0, NAME_X)
+        # stage mark / weight / scale row
+        h(21.0, 90.0, NAME_X)
+        for x in MID_X[1:-1]:
+            v(x, 21.0, 30.0)
+        v(NAME_X, 0.0, 56.0)
+        # name zone rows: 单位名称 18 / 图样名称 21 / 图样代号 9 / 投影符号 8
+        for y in (8.0, 17.0, 38.0):
+            h(y, NAME_X, 180.0)
 
         written = [0]
 
@@ -2516,35 +2858,40 @@ def main():
             note.Commit()
             written[0] += 1
 
-        # 更改区表头
+        # change zone headers
         label("标记", 1.0, 51.5, 2.5)
-        label("处数", 13.0, 51.5, 2.5)
-        label("分区", 25.0, 51.5, 2.5)
-        label("更改文件号", 37.0, 51.5, 2.5)
-        label("签名", 66.0, 51.5, 2.5)
-        label("年.月.日", 76.5, 51.5, 2.5)
-        # 签名行：设计(顶) / 审核 / 工艺 / 批准(底)
+        label("处数", 12.0, 51.5, 2.5)
+        label("分区", 23.0, 51.5, 2.5)
+        label("更改文件号", 41.0, 51.5, 2.2)
+        label("签名", 59.0, 51.5, 2.5)
+        label("年.月.日", 73.0, 51.5, 2.2)
+        # signature rows: 设计 (top) / 审核 / 工艺 / 批准 (bottom)
         for row, (role, who) in enumerate((("设计", designer), ("审核", checker),
                                            ("工艺", ""), ("批准", ""))):
             base = 21.0 - row * 7.0
             label(role, 1.0, base + 2.2, 2.5)
-            label(who, 25.0, base + 2.2, 3.0)
+            label(who, 23.0, base + 2.2, 3.0)
             if row < 2:
-                label(date, 57.0, base + 2.2, 2.5)
-        # 张次落在批准行的日期格
-        label("共 1 张  第 1 张", 57.0, 2.2, 2.5)
-        # 中列：材料标记 / 阶段标记 / 重量 / 比例（标签贴格顶，数值在下）
-        label("材料标记", 91.0, 49.0, 2.2)
-        label(material, 91.0, 44.0, 3.5)
-        label("阶段标记", 91.0, 35.0, 2.2)
-        label("重量", 91.0, 21.0, 2.2)
-        label(str(args.get("weight") or ""), 91.0, 16.0, 3.0)
-        label("比例", 91.0, 7.0, 2.2)
-        label(scale, 91.0, 3.2, 3.2)
-        # 名称区
-        label(company, 111.0, 46.0, 3.0)
-        label(part_name, 111.0, 26.0, 4.5)
-        label(drawing_no, 111.0, 6.0, 4.5)
+                label(date, 59.0, base + 2.2, 2.2)
+        # middle upper band: material mark (4 x 6.5 = 26 mm)
+        label("材料标记", 91.0, 52.0, 2.2)
+        label(material, 91.0, 44.8, 3.5)
+        # middle row: stage mark / weight / scale, label on top and value below
+        label("阶段标记", 91.0, 26.8, 2.0)
+        label(str(args.get("stage") or ""), 91.0, 22.4, 2.5)
+        label("重量", 104.0, 26.8, 2.0)
+        label("比例", 111.0, 26.8, 2.0)
+        label(scale, 111.0, 22.4, 2.4)
+        # sheet count, centred in the lower middle band
+        label("共 1 张  第 1 张", 91.0, 8.5, 2.2)
+        # name zone: 单位名称 / 图样名称 / 图样代号 / 投影符号
+        label("单位名称", 125.0, 49.0, 2.2)
+        label(company, 125.0, 41.0, 3.2)
+        label("图样名称", 125.0, 29.0, 2.2)
+        label(part_name, 125.0, 20.5, 4.0)
+        label("图样代号", 125.0, 10.8, 2.2)
+        label(drawing_no, 125.0, 9.2, 3.0)
+        label("投影符号", 125.0, 2.2, 2.2)
 
         if not was_active:
             sheet.ResetActiveForSketching()
@@ -4126,17 +4473,21 @@ def main():
     # GB/T 10609.2-1989 明细栏：序号 / 代号 / 名称 / 数量 / 材料 / 单件重量 / 总计 / 备注,
     # 列宽合计 180 mm，与 GB/T 10609.1 标题栏同宽。
     BOM_FIELDS = {
-        "no": ("序号", "No.", 10.0),
-        "part": ("代号", "Part No.", 28.0),
-        "name": ("名称", "Name", 60.0),
-        "qty": ("数量", "Qty", 10.0),
-        "material": ("材料", "Material", 24.0),
-        "unit": ("单件重量", "Unit wt", 18.0),
-        "total": ("总计", "Total", 16.0),
-        "note": ("备注", "Remarks", 14.0),
+        # The default six columns add up to 180 mm, the width of the GB title block, so the
+        # table lines up with it instead of stopping short.
+        "no": ("序号", "No.", 12.0),
+        "part": ("代号", "Part No.", 30.0),
+        "name": ("名称", "Name", 66.0),
+        "qty": ("数量", "Qty", 12.0),
+        "material": ("材料", "Material", 30.0),
+        "unit": ("单件重量", "Unit wt", 24.0),
+        "total": ("总计", "Total", 22.0),
+        "note": ("备注", "Remarks", 30.0),
         "volume": ("体积 mm3", "Vol mm3", 28.0),
     }
-    BOM_ORDER = ("no", "part", "name", "qty", "material", "unit", "total", "note")
+    # The sheet does not report weights: the BOM lists identity, quantity and material only.
+    # `unit` / `total` / `volume` stay available through the columns argument and the CSV.
+    BOM_ORDER = ("no", "part", "name", "qty", "material", "note")
     BOM_SUMS = ("qty", "unit", "total", "volume")
 
     def bom_columns(spec, language):
@@ -4236,7 +4587,7 @@ def main():
             if args.get("drawing") is False:
                 raise RuntimeError("this part has no %s drawing sheet — run nx_drawing first" % sheet_size)
             cmd_drawing({"size": sheet_size, "projection": "first",
-                         "views": {"top": True, "front": True, "isometric": True}})
+                         "views": {"top": True, "front": True, "right": True}})
             sheets = [sh for sh in list(part.DraftingDrawingSheets) if on_size(sh)]
         if not sheets:
             sheets = list(part.DraftingDrawingSheets)
@@ -4262,10 +4613,15 @@ def main():
         row_height = float(args.get("rowHeight") or 7.0)
         header_height = row_height + 1.5
         total_height = row_height + 1.0
-        at = args.get("at") or [20.0, 25.0]
-        x0, y0 = float(at[0]), float(at[1])
         columns = bom_columns(args.get("columns"), args.get("language"))
         table_width = sum(width for _, _, width in columns)
+        # Default position: right-aligned with the title block and hugging its top edge, so the
+        # table sits directly above the title block instead of floating at the sheet corner.
+        at = args.get("at")
+        if at is None:
+            _, margin = sheet_margins(float(sheet.Length), float(sheet.Height))
+            at = [float(sheet.Length) - margin - table_width, margin + 56.0]
+        x0, y0 = float(at[0]), float(at[1])
         data_rows = len(groups)
         header_bottom = y0 + total_height + data_rows * row_height
         table_top = header_bottom + header_height
@@ -4301,27 +4657,23 @@ def main():
             nonlocal cells
             if font is None:
                 return
-            try:
-                cell_text(part, fit_text(text, cell_width - min(6.0, max(2.5, cell_width * 0.09)),
-                                         text_size),
-                          cell_x + 1.0, bottom + (height + text_size) * 0.5,
-                          text_size, font)
-                cells += 1
-                return
-            except Exception:
-                # One cell refusing to draw must not lose the whole table.
-                return
-            # The margin shrinks with the column so a narrow one (序号, 12 mm) does
-            # not eat its own header, while a wide one still keeps clear of the line.
+            # The CJK stroke font draws digits wider than text_width_mm assumes, so keep a
+            # safety band and shrink the lettering until the label fits its own cell - a
+            # 1.3951 in a 18 mm column used to run across the next column line.
             margin = min(6.0, max(2.5, cell_width * 0.09))
-            label = fit_text(text, cell_width - margin, text_size)
+            avail = max(4.0, (cell_width - margin) * 0.92)
+            size = text_size
+            label = str(text)
+            while size > 2.0 and text_width_mm(label, size) > avail:
+                size = round(size - 0.2, 2)
+            label = fit_text(label, avail, size)
             # A drafting note hangs BELOW its origin point, so centring a line in a
             # row means origin = bottom + (height + text size) / 2.
             try:
-                cell_text(part, label, cell_x + 1.0, bottom + (height + text_size) * 0.5,
-                          text_size, font)
+                cell_text(part, label, cell_x + 1.0, bottom + (height + size) * 0.5, size, font)
                 cells += 1
             except Exception:
+                # One cell refusing to draw must not lose the whole table.
                 pass
 
         # header
@@ -4378,10 +4730,9 @@ def main():
 
         caption = args.get("caption")
         if caption is None:
-            caption = "明细表  %s   %d 项 / %d 件   总重 %.4f kg" % (
-                fix_text(part.Leaf), data_rows, total_quantity, total_mass)
-            if any(row.get("massEstimated") for row in groups):
-                caption += "   *无材质，按钢 7.85 估算"
+            # No weight on the sheet: the title says what it is and how many items it lists.
+            caption = "明细表  %s   %d 项 / %d 件" % (
+                fix_text(part.Leaf), data_rows, total_quantity)
         if font is not None:
             # The note hangs below its origin, so lift it clear of the top border.
             cell_text(part, str(caption), x0, table_top + text_size + 4.0, text_size + 0.5, font)
@@ -4470,17 +4821,47 @@ def main():
             seen.append(key)
             unique.append(path)
         if not unique:
-            raise RuntimeError("nothing to draw: pass paths, or open an assembly whose "
-                               "components live on disk")
+            active = ""
+            try:
+                active = fix_text(display_part().Leaf) or ""
+            except Exception:
+                active = ""
+            raise RuntimeError(
+                "nothing to draw: the active part%s is not an assembly with components on disk. "
+                "Open the assembly first (nx_open on the .prt), or pass paths=[...] with the "
+                "part files to draw." % (" (%s)" % active if active else ""))
         out_dir = args.get("outDir") or os.path.join(OUT_DIR, "batch")
         out_dir = out_dir if os.path.isabs(out_dir) else os.path.join(OUT_DIR, out_dir)
         if not os.path.isdir(out_dir):
             os.makedirs(out_dir)
-        size = str(args.get("size") or "A3").upper()
-        views = args.get("views") or {"top": True, "front": True, "right": True, "isometric": True}
+        # Batch drawings are part drawings, so they default to A4.
+        size = str(args.get("size") or "A4").upper()
+        views = args.get("views") or {"top": True, "front": True, "right": True}
         reuse = args.get("reuse", True) is not False
         keep = state.get("part")
         rows = []
+        used_targets = set()
+
+        def pdf_target(path):
+            """A pdf file name for this part, Chinese kept and duplicates numbered.
+
+            The old name went through a keep-only-[A-Za-z0-9_.-] filter, so every Chinese part
+            name collapsed into "_" and a 11-part assembly printed eleven drawings into one
+            _.pdf: the panel reported "11/11 printed" while the folder held a single file.
+            """
+            base = os.path.splitext(os.path.basename(path))[0]
+            safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", base).strip(" .") or "part"
+            candidate = os.path.join(out_dir, safe + ".pdf")
+            key = os.path.normcase(candidate)
+            if key in used_targets:
+                index = 2
+                while os.path.normcase(os.path.join(out_dir, "%s_%d.pdf" % (safe, index))) in used_targets:
+                    index += 1
+                candidate = os.path.join(out_dir, "%s_%d.pdf" % (safe, index))
+                key = os.path.normcase(candidate)
+            used_targets.add(key)
+            return candidate
+
         for path in unique:
             entry = {"path": path}
             started_at = time.time()
@@ -4501,14 +4882,26 @@ def main():
                     entry["created"] = False
                 sheet = part.DraftingDrawingSheets.CurrentDrawingSheet
                 entry["sheet"] = sheet_info(sheet)
-                target = os.path.join(out_dir, re.sub(r"[^A-Za-z0-9_.-]+", "_",
-                                                      os.path.splitext(os.path.basename(path))[0]) + ".pdf")
+                target = pdf_target(path)
                 printed = cmd_pdf({"path": target})
                 entry["pdf"] = printed["path"]
                 entry["pdfBytes"] = printed["bytes"]
                 if not printed.get("exists") or not os.path.exists(target) or os.path.getsize(target) < 1000:
                     raise RuntimeError("the PDF was not written (%s bytes)" %
                                        printed.get("bytes", 0))
+                # The PDF is only a print; the drawing itself has to come back as a .prt so it
+                # can still be edited in NX. SaveAs keeps the source part untouched and writes
+                # the drawing, the views and the frame into the copy in outDir.
+                model_target = os.path.splitext(target)[0] + ".prt"
+                entry["model"] = model_target
+                try:
+                    if os.path.exists(model_target):
+                        os.remove(model_target)
+                    part.SaveAs(model_target)
+                    entry["modelBytes"] = os.path.getsize(model_target)
+                except Exception as error:
+                    entry["model"] = None
+                    entry["modelError"] = "%s: %s" % (type(error).__name__, error)
             except Exception as error:
                 entry["error"] = "%s: %s" % (type(error).__name__, error)
             entry["seconds"] = round(time.time() - started_at, 1)
@@ -4520,10 +4913,22 @@ def main():
             except Exception:
                 pass
         ok = [row for row in rows if "pdf" in row and not row.get("error")]
+        files = []
+        models = []
+        for row in ok:
+            pdf_path = row.get("pdf")
+            if pdf_path and os.path.exists(pdf_path):
+                files.append(pdf_path)
+            model_path = row.get("model")
+            if model_path and os.path.exists(model_path):
+                models.append(model_path)
         return {
             "outDir": out_dir,
             "parts": len(unique),
             "drawn": len(ok),
+            # What is actually on disk, so "11/11 printed" can be checked against the folder.
+            "files": files,
+            "models": models,
             "failed": [row for row in rows if row.get("error")],
             "rows": rows,
         }

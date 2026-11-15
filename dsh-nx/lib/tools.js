@@ -1308,11 +1308,14 @@ export function createNxTools(bridge) {
   tools.push(make({
     name: 'nx_drawing',
     description:
-      'Create an engineering drawing of the active part: a sheet of the given size with the NX ' +
-      'template frame and title block, then a base view plus the requested projected views, placed and ' +
-      'scaled automatically. Returns the sheet, its scale and the views. The projected views print ' +
-      'visible edges only — hidden lines are never generated in this batch session, so use ' +
-      'nx_section_view when internal geometry has to be shown.',
+      'Create an engineering drawing of the active part on a sheet of the given size, laid out to fixed ' +
+      'rules: the views together cover at least 40 % of the sheet (minViewArea), every gap between them ' +
+      'is at least 10 % of the sheet width (viewGap) and the block is spread evenly inside the frame. ' +
+      'A part with internal features (holes, bores, pockets) also gets a section view through its middle. ' +
+      'The sheet always carries a real GB frame and title block in the bottom-right corner, drawn as ' +
+      'sheet curves, because the frame an NX template carries does not print. Projected views print ' +
+      'visible edges only — hidden lines are never generated in this batch session, which is why the ' +
+      'section view is what shows internal geometry.',
     parameters: {
       size: { type: 'string', description: 'sheet size A0 | A1 | A2 | A3 | A4 (default A3)' },
       projection: { type: 'string', description: 'first (default) | third angle' },
@@ -1333,8 +1336,19 @@ export function createNxTools(bridge) {
         additionalProperties: false,
       },
       autoScale: { type: 'boolean', description: 'let NX scale the views to fit (default true)' },
-      template: { type: 'boolean', description: 'use the NX sheet template with frame and title block (default true)' },
+      template: { type: 'boolean', description: 'use the NX sheet template (its frame does not print; the GB frame is drawn anyway)' },
       sheetName: { type: 'string', description: 'sheet name when no template is used' },
+      minViewArea: { type: 'number', description: 'minimum share of the sheet the views must cover (default 0.40 = 40 %)' },
+      viewGap: { type: 'number', description: 'minimum gap between views as a share of the sheet width (default 0.10 = 10 %)' },
+      section: { type: 'boolean', description: 'add a section view when the part has internal features (default true)' },
+      frame: { type: 'boolean', description: 'draw the GB frame and title block (default true)' },
+      refresh: { type: 'boolean', description: 're-apply the layout rules to a sheet that already has views instead of reusing it as is' },
+      partName: { type: 'string', description: 'part name for the title block (default: the part file name)' },
+      drawingNo: { type: 'string', description: 'drawing number for the title block' },
+      material: { type: 'string', description: 'material shown in the title block' },
+      designer: { type: 'string', description: 'designer name for the title block' },
+      checker: { type: 'string', description: 'checker name for the title block' },
+      company: { type: 'string', description: 'company shown in the title block' },
     },
     timeoutMs: 600_000,
     run: (args) => call('drawing', {
@@ -1345,11 +1359,34 @@ export function createNxTools(bridge) {
       autoScale: args.autoScale,
       template: args.template,
       sheetName: args.sheetName,
+      minViewArea: args.minViewArea,
+      viewGap: args.viewGap,
+      section: args.section,
+      frame: args.frame,
+      refresh: args.refresh,
+      partName: args.partName,
+      drawingNo: args.drawingNo,
+      material: args.material,
+      designer: args.designer,
+      checker: args.checker,
+      company: args.company,
     }, 540_000),
     render: (_args, value) => text(
       `sheet ${value.sheet?.name ?? '?'}  ${round(value.sheet?.width)}×${round(value.sheet?.height)} mm` +
       `  scale ${value.sheet?.scale?.map((v) => round(v, 4)).join(':')}`,
       `views ${value.sheet?.views?.map((v) => `${v.name} (${v.kind}, ${round(v.scale, 3)})`).join(', ') || 'none'}`,
+      value.layout
+        ? `layout ${value.layout.columns} column(s)  gap ${value.layout.gap} mm  ` +
+          `views cover ${(value.layout.areaRatio * 100).toFixed(1)} % of the sheet ` +
+          `(target ${(value.layout.target * 100).toFixed(0)} %, ${value.layout.met ? 'met' : 'not reached'})`
+        : '',
+      value.section
+        ? value.section.created
+          ? `section ${value.section.view} through the part (internal features found)`
+          : `no section: ${value.section.reason}`
+        : '',
+      value.frame ? `GB frame + title block drawn (${value.frame.curves ?? '?'} curves, bottom-right)` : '',
+      ...(value.notes ?? []).map((line) => `note: ${line}`),
     ),
   }));
 
@@ -1871,33 +1908,40 @@ export function createNxTools(bridge) {
     name: 'nx_bom_table',
     description:
       'Draw the bill of materials as a ruled table on the current drawing sheet of the active assembly ' +
-      '(real sheet curves plus one text per cell: 序号 / 零件号 / 名称 / 数量 / 单重 kg / 总重 kg, with a 合计 ' +
-      'row). Uses the same rollup as nx_assembly_bom, so the numbers cannot disagree. Creates an A3 sheet ' +
-      'with top/front/isometric views first when the part has none.',
+      '(real sheet curves plus one text per cell: 序号 / 代号 / 名称 / 数量 / 材料 / 备注, with a 合计 row). ' +
+      'The sheet carries no weights — ask for them with columns "unit,total" or take the CSV. By default ' +
+      'the table is right-aligned with the title block and sits directly on its top edge; pass at to move ' +
+      'it. Uses the same rollup as nx_assembly_bom, so the numbers cannot disagree. Creates an A3 sheet ' +
+      'with top/front/right views first when the part has none (no isometric unless asked).',
     parameters: {
-      at: { ...POINT_2D, description: 'bottom-left corner of the table on the sheet, mm (default 20,25)' },
+      at: { ...POINT_2D, description: 'bottom-left corner of the table on the sheet, mm (default: hugging the title block top edge)' },
       size: { type: 'string', description: 'sheet size when a sheet has to be created (default A3)' },
+      columns: { type: 'string', description: 'comma-separated column ids: no,part,name,qty,material,note,unit,total,volume (default no,part,name,qty,material,note)' },
+      language: { type: 'string', description: 'zh (default) | en' },
       rowHeight: { type: 'number', description: 'body row height in mm (default 7)' },
       textSize: { type: 'number', description: 'text height in mm (default 3)' },
-      caption: { type: 'string', description: 'line above the table (default: assembly, item count, total mass)' },
+      caption: { type: 'string', description: 'line above the table (default: assembly, item count)' },
       includeSuppressed: { type: 'boolean', description: 'also list suppressed components (default false)' },
       fast: { type: 'boolean', description: 'skip mass columns (names and quantities only)' },
+      csv: { type: 'string', description: 'also write the same rollup as a UTF-8 CSV' },
       drawing: { type: 'boolean', description: 'false refuses to create a sheet automatically' },
     },
     timeoutMs: 300_000,
     run: (args) => call('bom_table', {
       at: args.at,
       size: args.size,
+      columns: args.columns,
+      language: args.language,
       rowHeight: args.rowHeight,
       textSize: args.textSize,
       caption: args.caption,
       includeSuppressed: args.includeSuppressed === true,
       fast: args.fast === true,
+      csv: args.csv,
       drawing: args.drawing,
     }, 260_000),
     render: (_args, value) => text(
-      `bom table on ${value.sheet ?? '?'}: ${value.rows} line(s), ${value.quantity} part(s), ` +
-        `${round(value.mass, 4)} kg` +
+      `bom table on ${value.sheet ?? '?'}: ${value.rows} line(s), ${value.quantity} part(s)` +
         (value.suppressed ? `  +${value.suppressed} suppressed` : ''),
       `at ${(value.at ?? []).join(', ')} mm  ${round(value.table?.width, 1)}×` +
         `${round(value.table?.height, 1)} mm  ${value.lines} line(s), ${value.cells} cell(s)`,
@@ -1933,12 +1977,15 @@ export function createNxTools(bridge) {
       fromAssembly: args.fromAssembly !== false,
     }, 1_740_000),
     render: (_args, value) => text(
-      `drew ${value.drawn} of ${value.parts} part(s) into ${value.outDir}`,
+      `drew ${value.drawn} of ${value.parts} part(s) into ${value.outDir}` +
+        `  ·  ${value.files?.length ?? value.drawn} pdf` +
+        `  ·  ${value.models?.length ?? 0} prt (editable in NX)`,
       ...(value.rows ?? []).slice(0, 15).map((row) => (
         row.error
           ? `  ${row.part ?? row.path}: ${row.error}`
           : `  ${row.part}  ${row.sheet?.name ?? ''}  ${row.sheet?.views?.length ?? 0} view(s)  ` +
-            `${row.pdfBytes ?? 0} bytes  ${row.seconds}s${row.created ? '  new sheet' : ''}`
+            `${row.pdfBytes ?? 0} bytes  ${row.seconds}s${row.created ? '  new sheet' : ''}` +
+            (row.modelError ? `  ·  prt failed: ${row.modelError}` : '')
       )),
     ),
   }));
@@ -2290,7 +2337,9 @@ export function createNxTools(bridge) {
       'Faces are named by side (-x/+x/-y/+y/-z/+z). Loads: force (direction + value N), pressure (MPa), ' +
       'moment (axis + value Nmm), gravity, centrifugal (rpm + axis). solver "statics" gives maxDisplacement ' +
       'mm and maxVonMises MPa plus contour pictures (deflection + von Mises); solver "modal" returns the ' +
-      'first modes in Hz (SOL 103). Element size defaults to the largest extent / 40.',
+      'first modes in Hz (SOL 103). Element size defaults to the largest extent / 40; on a thin ' +
+      'part that is coarser than the wall, so keep the thickness at least 3 elements deep ' +
+      '(elementSize <= thickness / 3) whenever the volume or the stress at a wall matters.',
     parameters: {
       elementSize: { type: 'number', description: 'element size, mm (default: largest extent / 40)' },
       mesh: { type: 'string', description: 'draped (default, boundary fitted) | voxel (plain grid)' },
