@@ -4,10 +4,13 @@
 
 **当前版本：1.0.10** · npm 包名 `@aaz111/dsh-nx`
 
-[![npm](https://img.shields.io/npm/v/@aaz111/dsh-nx.svg)](https://www.npmjs.com/package/@aaz111/dsh-nx)
+![npm](https://img.shields.io/npm/v/@aaz111/dsh-nx.svg)
+[![dsh.so install · dsh 0.2.1-rc.5](https://cdn.dsh.so/badge/install/dsh-nx-3@0.2.1-rc.5.svg)](https://www.dsh.so/artifact/dsh-nx-3/?ref=badge-install)
 
 在后台 NX 会话中完成三维建模、工程图纸、格式导出、装配管理与有限元分析，全部通过工具调用或侧栏面板驱动，无需手动操作 NX 图形界面。
 甚至可以用许愿式的要求建模，但是ai生成不保证完全准确，生成结果需人工复核。
+
+**插件只是辅助效率工具，而不是自动化工具。为什么不做成自动化？因为返回码正确不代表产物符合要求，设计和制图最终仍需人工审查**
 
 ---
 
