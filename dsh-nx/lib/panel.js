@@ -70,6 +70,38 @@ async function readBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
+/** Hosts that count as "this machine" for the same-origin check. */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+
+/**
+ * Reject a request that did not come from the DSH page itself.
+ *
+ * These routes can start NX, open parts and write files, and they listen on the loopback
+ * interface — but so does every other process on the machine, and a web page the user
+ * happens to have open can POST to 127.0.0.1 too. Two cheap checks close that:
+ *
+ *   - a non-loopback Host header means a DNS-rebinding page is pretending to be us;
+ *   - an Origin (or Referer) that names a different site means cross-site POST.
+ *
+ * Requests without either header are allowed: the panel's own fetches, the CLI and curl
+ * send neither, and refusing them would break normal use without stopping an attacker who
+ * can already run code on the machine.
+ */
+function sameOrigin(req) {
+  const host = String(req.headers.host ?? '')
+  const hostname = host.replace(/:\d+$/, '').toLowerCase()
+  if (hostname && !LOOPBACK_HOSTS.has(hostname)) return false
+  const origin = req.headers.origin ?? req.headers.referer ?? ''
+  if (!origin) return true
+  try {
+    const source = new URL(origin)
+    return LOOPBACK_HOSTS.has(source.hostname.toLowerCase())
+  }
+  catch {
+    return false
+  }
+}
+
 /** Folders the artefact scan skips: caches and scratch, never deliverables. */
 const SKIP_DIRS = new Set(['preview', '__pycache__', 'node_modules', 'fe', 'fe2', 'cae', 'report'])
 
@@ -484,7 +516,17 @@ export function registerPanelRoutes({ webServer, bridge, outputDir }) {
   })
 
 
-  const disposers = routes.map((route) => webServer.register(route))
+  const disposers = routes.map((route) => webServer.register({
+    ...route,
+    // Every panel route goes through the same-origin gate: see sameOrigin() above.
+    handler(req, res) {
+      if (!sameOrigin(req)) {
+        send(res, 403, { ok: false, error: 'cross-origin request refused' })
+        return undefined
+      }
+      return route.handler(req, res)
+    },
+  }))
   return () => {
     for (const dispose of disposers) {
       if (typeof dispose === 'function') dispose()

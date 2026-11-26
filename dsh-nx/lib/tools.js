@@ -1117,6 +1117,46 @@ export function createNxTools(bridge) {
   }));
 
   tools.push(make({
+    name: 'nx_dimension',
+    description:
+      'Put real NX drafting dimensions on the drawing sheet, measured from the model: the overall ' +
+      'size and feature chain under and to the left of each orthographic view, the hole centrelines ' +
+      'as a chain, and one diameter callout per distinct hole size (2× Ø12 when it repeats). ' +
+      'Values are NX measurements, so they follow the model after an edit. Needs nx_drawing first.',
+    parameters: {
+      views: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'views to dimension (default: Top and Front)',
+      },
+      length: {
+        type: 'boolean',
+        description: 'dimension the overall size and feature positions (default true)',
+      },
+      diameter: { type: 'boolean', description: 'add one diameter callout per hole size (default true)' },
+      count: {
+        type: 'boolean',
+        description: 'prefix a repeated hole size with its count, e.g. 2× (default true)',
+      },
+      step: { type: 'number', description: 'gap between chained dimension lines, mm (default 10)' },
+      textSize: { type: 'number', description: 'dimension text height, mm (default: the sheet default 3.5)' },
+    },
+    timeoutMs: 180_000,
+    run: (args) => call('dimension', {
+      views: args.views,
+      length: args.length,
+      diameter: args.diameter,
+      count: args.count,
+      step: args.step,
+      textSize: args.textSize,
+    }, 150_000),
+    render: (_args, value) => text(
+      `${value.dimensions} dimension(s) on ${value.views.join(', ')}\n`
+        + value.items.map((item) => `  ${item.kind} ${item.value} at (${item.at.join(', ')})`).join('\n'),
+    ),
+  }));
+
+  tools.push(make({
     name: 'nx_drawing_frame',
     description:
       'Draw a GB drawing frame and title block onto the current sheet as real curves and notes — ' +
@@ -1311,18 +1351,21 @@ export function createNxTools(bridge) {
       'Create an engineering drawing of the active part on a sheet of the given size, laid out to fixed ' +
       'rules: the views together cover at least 40 % of the sheet (minViewArea), every gap between them ' +
       'is at least 10 % of the sheet width (viewGap) and the block is spread evenly inside the frame. ' +
-      'A part with internal features (holes, bores, pockets) also gets a section view through its middle. ' +
-      'The sheet always carries a real GB frame and title block in the bottom-right corner, drawn as ' +
-      'sheet curves, because the frame an NX template carries does not print. Projected views print ' +
-      'visible edges only — hidden lines are never generated in this batch session, which is why the ' +
-      'section view is what shows internal geometry.',
+      'By default only the views needed to dimension every size are placed (two for most parts — ' +
+      'a plate gets Top + Front, a turned part gets the axial view plus one side view); pass views ' +
+      'explicitly to override. Views are aligned by first-angle projection: Top sits straight below ' +
+      'Front and Right straight beside it. On a part with an internal cavity a section view STANDS IN ' +
+      'for the front view rather than being added beside it. The sheet always carries a real GB frame and title block in the ' +
+      'bottom-right corner, drawn as sheet curves, because the frame an NX template carries does not ' +
+      'print. Projected views print visible edges only — hidden lines are never generated in this ' +
+      'batch session, which is why the section view is what shows internal geometry.',
     parameters: {
       size: { type: 'string', description: 'sheet size A0 | A1 | A2 | A3 | A4 (default A3)' },
       projection: { type: 'string', description: 'first (default) | third angle' },
       baseView: { type: 'string', description: 'base modelling view: TOP (default), FRONT, RIGHT, LEFT, BACK, BOTTOM, ISOMETRIC, TRIMETRIC' },
       views: {
         type: 'object',
-        description: 'which views to place, e.g. {"front": true, "right": true, "isometric": true}',
+        description: 'override the minimal view set, e.g. {"front": true, "right": true, "isometric": true}. Omit to let the tool pick only the views it needs to dimension everything',
         properties: {
           top: { type: 'boolean' },
           front: { type: 'boolean' },
@@ -1340,7 +1383,7 @@ export function createNxTools(bridge) {
       sheetName: { type: 'string', description: 'sheet name when no template is used' },
       minViewArea: { type: 'number', description: 'minimum share of the sheet the views must cover (default 0.40 = 40 %)' },
       viewGap: { type: 'number', description: 'minimum gap between views as a share of the sheet width (default 0.10 = 10 %)' },
-      section: { type: 'boolean', description: 'add a section view when the part has internal features (default true)' },
+      section: { type: 'string', description: 'replace (default: a section stands in for the front view on a part with an internal cavity) | add (keep both) | false (no section)' },
       frame: { type: 'boolean', description: 'draw the GB frame and title block (default true)' },
       refresh: { type: 'boolean', description: 're-apply the layout rules to a sheet that already has views instead of reusing it as is' },
       partName: { type: 'string', description: 'part name for the title block (default: the part file name)' },

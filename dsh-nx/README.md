@@ -2,6 +2,8 @@
 
 **Siemens NX 插件 · DeepSeek Harness 侧栏工作台**
 
+**当前版本：1.0.10** · npm 包名 `@aaz111/dsh-nx`
+
 在后台 NX 会话中完成三维建模、工程图纸、格式导出、装配管理与有限元分析，全部通过工具调用或侧栏面板驱动，无需手动操作 NX 图形界面。
 
 ---
@@ -19,7 +21,7 @@
 | **基准与草图** | `nx_datum` `nx_sketch` | 基准平面/轴/点；矩形/圆/直线/多段线草图（自动约束），可直接拉伸/切除 |
 | **布尔与细化** | `nx_boolean` `nx_fillet` `nx_chamfer` `nx_hole` `nx_thread` `nx_shell` | 合并/切除/相交，圆角，倒角，真实 NX 孔特征，内螺纹（符号+详细），抽壳 |
 | **变换与阵列** | `nx_transform` `nx_pattern` `nx_expression` | 移动/旋转/镜像，线性/环形阵列，读写参数表达式 |
-| **工程图纸** | `nx_drawing` `nx_pdf` `nx_annotate` | 自动投影视图 + 图纸，导出 PDF，自动标注（已有 PMI） |
+| **工程图纸** | `nx_drawing` `nx_pdf` `nx_dimension` `nx_annotate` | 自动投影视图（**只出能标全尺寸的最少数量**：板件 2 个、回转件 2 个）+ 图纸，导出 PDF，原生尺寸标注（读数随模型联动） |
 | **制图补充** | `nx_section_view` `nx_detail_view` `nx_note` | 剖视图（指定剖切线），局部放大图（圆形区域 + 比例），文字注释（自动选中文字体） |
 | **BOM 与批量出图** | `nx_bom_table` `nx_batch_drawings` | 在图纸上画明细表（自绘表格线 + 每格注释），逐件 A3 图纸 + PDF |
 | **格式导出** | `nx_export` | STEP / IGES / STL（等待 NX 异步翻译器完成） |
@@ -30,8 +32,9 @@
 | **有限元** | `nx_fea_spec` `nx_fea_solve` `nx_fea_solid` | NX Nastran 悬臂梁快速校核（SOL 101）；真实几何 FE（体素/铺面网格，力/压力/力矩/重力/离心，静力/模态，挠度 + Von Mises 云图） |
 | **曲面闭环** | `nx_surface_sew` `nx_thicken` `nx_surface_trim_extend` `nx_surface_nside` | 曲面缝合、加厚成实体、修剪延伸、N 边补面 |
 | **同步建模** | `nx_sync_face` `nx_sync_region` | 无草图改面：平移 / 偏置 / 拉出 / 改圆柱直径；删面并自动愈合 |
-| **制图标注** | `nx_gdt` `nx_balloon` `nx_surface_finish` `nx_centerline` | 形位公差框、序号气球、表面粗糙度、中心标记 |
+| **制图标注** | `nx_dimension` `nx_gdt` `nx_balloon` `nx_surface_finish` `nx_centerline` | 原生尺寸（读数随模型联动）、形位公差框、序号气球、表面粗糙度、中心标记 |
 | **图框与标题栏** | `nx_drawing_frame` | 在图纸上画真实 GB 图框 + 标题栏（含中文），会随 PDF 打印 |
+| **运动仿真** | `nx_motion_open` `nx_motion_status` `nx_motion_solve` `nx_motion_frames` `nx_motion_report` | 打开 .sim 运动模型，求解 NX Motion，采样各连杆位姿（JSON/CSV），出轨迹图 PNG + 动画 GIF |
 | **孔型与管路** | `nx_hole`（`type`）、`nx_tube` | 沉头孔 / 锥沉头孔；沿路径生成实心或空心管道 |
 | **筋 / 特征阵列 / 坐标系** | `nx_rib` `nx_pattern_feature` `nx_csys` | 轮廓筋、线性特征阵列、基准坐标系 |
 | **底层逃生舱** | `nx_python` | 在 NX 会话内执行任意 NXOpen Python 代码 |
@@ -43,14 +46,14 @@
 | 限制 | 原因 | 替代方案 |
 |---|---|---|
 | DXF / DWG 导出 | NX 批处理翻译器挂起 | 用 STEP / IGES / STL |
-| 原生标注尺寸 | 批处理无法创建 PMI 标注 | 用 `nx_note` 手写文字注释 |
+| `nx_annotate` 自动标注 | 只认已有 PMI，普通实体没有 PMI | 用 `nx_dimension` 打原生尺寸 |
 | 草图约束尺寸 | NXOpen `CreateDimension` 未打通 | 用 `nx_expression` 驱动参数 |
 | 隐藏线 | 批处理无隐藏线消除 | 用 `nx_section_view` 剖视展示内部 |
 | 局部放大图内容为空 | 批处理无缩放渲染 | 用剖视图替代 |
 | 模板图框（`nx_drawing` 的 template） | 模板图框不随 PDF 输出 | 用 `nx_drawing_frame` 画真实 GB 图框 + 标题栏 |
-| 外螺纹 | NX 本机外螺纹数据缺失 | 仅支持内螺纹 |
+| 外螺纹（螺柱/凸台） | `NX_Thread_Standard.xml` 只有 `ThreadedHole` 行，缺 `ThreadedShaft` 数据；`external:true` 的参数已接，但提交失败 | 内螺纹完全可用 |
 | 直纹面 / 扫掠 / 投影 / 相交 / 回转曲面 | NXOpen 提交即报错 | 用 `through_curves` / `mesh` / `extrude` 替代 |
-| 装配体直接导 STL | 装配体无自身 Body | 用面板预览或导出单个零件 |
+| 装配体直接导 STEP 前未保存 | 翻译器读磁盘文件 | 先 `nx_save`（STL / IGES 直接走组件实体，不用存） |
 | `nx_fillet` 重叠圆角 | NX 拒绝重叠倒角 | 分批选边圆角 |
 | 拔模（Draft） | `CreateDraftBuilder` 提交报内存访问违规 | 用 `nx_extrude` 的 `draft` 参数 |
 | 面替换（Replace Face） | 会让 NX 批处理会话挂死 | 用 `nx_sync_region` 删面愈合 |
@@ -67,12 +70,18 @@
 ### 2.1 安装
 
 ```bash
-# 方式一：从 Release 下载 zip 解压
-# 方式二：从源码安装
+# 方式一：从 Release 下载 zip 解压后安装
 pnpm add file:<解压目录>/dsh-nx
+
+# 方式二：npm（包名带 scope）
+pnpm add @aaz111/dsh-nx
 ```
 
-**DSH 版本支持**：`engines.dsh` 为 `>=0.1.0-rc.7`；`@deepseek-ai/dsh-tools` 的 peer 覆盖 0.0.x / 0.1.x / 0.2.x，并单列 `>=0.2.2-rc.1 <0.3.0-0` 一档以容纳 0.2.2-rc.* 这类预发布。DSH 判定插件兼容性时**优先看 `engines.dsh`，有它时 peer 不参与**；插件市场卡片会把两条取交集，因此 `dsh-tools` peer 的上界决定卡片是否标红。若卡片仍显示红色但 `engines.dsh` 已满足，可直接从 GitHub 安装，或用 `dsh plugin allow-version dsh-nx@0.5.0 <运行时版本>` 放行该精确版本对。
+> **包名说明**：本插件的 npm 包名是 `@aaz111/dsh-nx`，不是 `dsh-nx` ——
+> npm 上的 `dsh-nx` 是另一个作者的包，与本项目无关。GitHub 仓库仍是
+> [github.com/aaz111/dsh-nx](https://github.com/aaz111/dsh-nx)。
+
+**DSH 版本支持**：`engines.dsh` 为 `>=0.1.0-rc.7`；`@deepseek-ai/dsh-tools` 的 peer 覆盖 0.0.x / 0.1.x / 0.2.x，并单列 `>=0.2.2-rc.1 <0.3.0-0` 一档以容纳 0.2.2-rc.* 这类预发布。DSH 判定插件兼容性时**优先看 `engines.dsh`，有它时 peer 不参与**；插件市场卡片会把两条取交集，因此 `dsh-tools` peer 的上界决定卡片是否标红。若卡片仍显示红色但 `engines.dsh` 已满足，可直接从 GitHub 安装，或用 `dsh plugin allow-version @aaz111/dsh-nx@1.0.10 <运行时版本>` 放行该精确版本对。
 
 **前提**：本地已安装 Siemens NX。安装路径由 `nxHome` 配置项或 `UGII_BASE_DIR` 环境变量指定；两者都不给时自动探测：先校验 `UGII_BASE_DIR` 确实是 NX 根，再扫常见 Siemens 目录及其两层子目录，最后扫所有存在盘符根（A:–Z:）的一层子目录，取第一个带 `NXBIN\run_journal.exe` 的目录。FE 工具额外需要 `simulation` / `nastran` 许可证。
 
@@ -102,6 +111,7 @@ nx_gdt             # 形位公差框
 nx_balloon         # 序号气球
 nx_surface_finish  # 表面粗糙度
 nx_centerline      # 中心标记
+nx_dimension       # 原生尺寸标注（自动识别轮廓/孔位/孔径）
 nx_sync_face       # 同步建模改面（move/offset/pull/resize）
 nx_sync_region     # 同步建模删面愈合
 nx_surface_sew     # 曲面缝合

@@ -58,9 +58,179 @@ def vert(pt, fn):
     return j
 
 
+def _xf(comp):
+    """Component placement as (origin, 3x3 rows); None means "already in part space"."""
+    if comp is None:
+        return None
+    try:
+        pos, mat = comp.GetPosition()
+        return ((float(pos.X), float(pos.Y), float(pos.Z)),
+                ((float(mat.Xx), float(mat.Xy), float(mat.Xz)),
+                 (float(mat.Yx), float(mat.Yy), float(mat.Yz)),
+                 (float(mat.Zx), float(mat.Zy), float(mat.Zz))))
+    except Exception:
+        return None
+
+
+def _tp(pt, xf):
+    if xf is None:
+        return (pt[0], pt[1], pt[2])
+    o, m = xf
+    x, y, z = pt[0], pt[1], pt[2]
+    # Matrix3x3 把三个轴按**行**给回来（Xx Xy Xz / Yx Yy Yz / Zx Zy Zz），所以把一个零件点
+    # 映射进装配空间是 origin + M^T * p。按行乘会把旋转反过来，整套装配就散了。
+    return (o[0] + m[0][0] * x + m[1][0] * y + m[2][0] * z,
+            o[1] + m[0][1] * x + m[1][1] * y + m[2][1] * z,
+            o[2] + m[0][2] * x + m[1][2] * y + m[2][2] * z)
+
+
+def _tn(vec, xf):
+    if xf is None:
+        return vec
+    m = xf[1]
+    x, y, z = vec
+    return (m[0][0] * x + m[1][0] * y + m[2][0] * z,
+            m[0][1] * x + m[1][1] * y + m[2][1] * z,
+            m[0][2] * x + m[1][2] * y + m[2][2] * z)
+
+
+def collect():
+    """(body, transform) pairs: the part's own bodies, or every component's for an assembly.
+
+    An assembly has no bodies of its own and its components open lightweight, so each
+    prototype has to be loaded before it has anything to facet -- otherwise the viewer got an
+    empty buffer and sat on "等待 NX…" for an assembly.
+    """
+    own = list(part.Bodies)
+    if own:
+        return [(b, None) for b in own]
+    asm = getattr(part, 'ComponentAssembly', None)
+    if asm is None:
+        return []
+    try:
+        stack = list(asm.RootComponent.GetChildren())
+    except Exception:
+        return []
+    pairs = []
+    guard = 0
+    while stack and guard < 4000:
+        guard += 1
+        comp = stack.pop()
+        try:
+            stack.extend(list(comp.GetChildren()))
+        except Exception:
+            pass
+        proto = getattr(comp, 'Prototype', None)
+        if proto is None:
+            continue
+        try:
+            proto.LoadFully()
+        except Exception:
+            pass
+        try:
+            found = list(proto.Bodies)
+        except Exception:
+            found = []
+        xf = _xf(comp)
+        for b in found:
+            pairs.append((b, xf))
+    return pairs
+
+
+def unify_winding(start):
+    """统一这个 body 的三角形绕序：整体看有向体积，为负就全部翻过来。
+
+    质心法在这里是错的 —— 泵体是空心筒，它的内壁法向本来就指向轴心（那是正确的
+    "实体外法向"），按"法向背离质心"去判会把内壁翻成朝外，壳体立刻不闭合，模板
+    正反面计数就废了。有向体积对闭合网格是整体量，内壁/外壁一起翻或不翻，不会拆散。
+    """
+    count = len(idx) - start
+    if count < 9:
+        return 0
+    # 以该 body 的包围盒中心为参考点，避免大坐标带来的数值误差
+    lo = [1e30, 1e30, 1e30]
+    hi = [-1e30, -1e30, -1e30]
+    for i in range(start, len(idx), 3):
+        for k in range(3):
+            p = pos[idx[i + k] * 3: idx[i + k] * 3 + 3]
+            for c in range(3):
+                if p[c] < lo[c]:
+                    lo[c] = p[c]
+                if p[c] > hi[c]:
+                    hi[c] = p[c]
+    ox = (lo[0] + hi[0]) * 0.5
+    oy = (lo[1] + hi[1]) * 0.5
+    oz = (lo[2] + hi[2]) * 0.5
+
+    vol = 0.0
+    for i in range(start, len(idx), 3):
+        a, b2, c2 = idx[i], idx[i + 1], idx[i + 2]
+        ax, ay, az = pos[a * 3] - ox, pos[a * 3 + 1] - oy, pos[a * 3 + 2] - oz
+        bx, by, bz = pos[b2 * 3] - ox, pos[b2 * 3 + 1] - oy, pos[b2 * 3 + 2] - oz
+        ex, ey, ez = pos[c2 * 3] - ox, pos[c2 * 3 + 1] - oy, pos[c2 * 3 + 2] - oz
+        vol += (ax * (by * ez - bz * ey)
+                + ay * (bz * ex - bx * ez)
+                + az * (bx * ey - by * ex))
+    if vol >= 0.0:
+        return 0
+    flipped = 0
+    for i in range(start, len(idx), 3):
+        idx[i + 1], idx[i + 2] = idx[i + 2], idx[i + 1]
+        flipped += 1
+    return flipped
+
+
+def recompute_normals(start):
+    """按统一后的绕序重算这个 body 的顶点法向。
+
+    unify_winding 只换了顶点顺序，法向还是按旧绕序累加的 —— 两者不一致时光照会跳。
+    这里把该 body 用到的顶点法向清零重算，绕序、法向、模板计数就都对上了。
+    """
+    if len(idx) - start < 9:
+        return
+    verts = set()
+    for i in range(start, len(idx), 3):
+        verts.add(idx[i])
+        verts.add(idx[i + 1])
+        verts.add(idx[i + 2])
+    for v_ in verts:
+        nrm[v_ * 3] = 0.0
+        nrm[v_ * 3 + 1] = 0.0
+        nrm[v_ * 3 + 2] = 0.0
+    for i in range(start, len(idx), 3):
+        a, b2, c2 = idx[i], idx[i + 1], idx[i + 2]
+        ax, ay, az = pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2]
+        bx, by, bz = pos[b2 * 3], pos[b2 * 3 + 1], pos[b2 * 3 + 2]
+        ex, ey, ez = pos[c2 * 3], pos[c2 * 3 + 1], pos[c2 * 3 + 2]
+        ux, uy, uz = bx - ax, by - ay, bz - az
+        vx, vy, vz = ex - ax, ey - ay, ez - az
+        gx, gy, gz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+        nrm[a * 3] += gx
+        nrm[a * 3 + 1] += gy
+        nrm[a * 3 + 2] += gz
+        nrm[b2 * 3] += gx
+        nrm[b2 * 3 + 1] += gy
+        nrm[b2 * 3 + 2] += gz
+        nrm[c2 * 3] += gx
+        nrm[c2 * 3 + 1] += gy
+        nrm[c2 * 3 + 2] += gz
+    for v_ in verts:
+        x, y, z = nrm[v_ * 3], nrm[v_ * 3 + 1], nrm[v_ * 3 + 2]
+        L = (x * x + y * y + z * z) ** 0.5
+        if L > 1e-12:
+            nrm[v_ * 3] = x / L
+            nrm[v_ * 3 + 1] = y / L
+            nrm[v_ * 3 + 2] = z / L
+        else:
+            nrm[v_ * 3] = 0.0
+            nrm[v_ * 3 + 1] = 0.0
+            nrm[v_ * 3 + 2] = 1.0
+
+
+groups = []
 tris = 0
-bodies = list(part.Bodies)
-for b in bodies:
+for b, _xfv in collect():
+    _idx_start = len(idx)
     # 精度改过就必须重面片化，否则 NX 会把旧缓存给回来
     if TOL:
         try:
@@ -99,9 +269,9 @@ for b in bodies:
                 continue
 
             try:
-                p0, p1, p2 = vs[0], vs[1], vs[2]
-                e1x, e1y, e1z = p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]
-                e2x, e2y, e2z = p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]
+                q0, q1, q2 = _tp(vs[0], _xfv), _tp(vs[1], _xfv), _tp(vs[2], _xfv)
+                e1x, e1y, e1z = q1[0] - q0[0], q1[1] - q0[1], q1[2] - q0[2]
+                e2x, e2y, e2z = q2[0] - q0[0], q2[1] - q0[1], q2[2] - q0[2]
                 fx = e1y * e2z - e1z * e2y
                 fy = e1z * e2x - e1x * e2z
                 fz = e1x * e2y - e1y * e2x
@@ -113,12 +283,12 @@ for b in bodies:
             if FLAT:
                 base = len(pos) // 3
                 for k in range(nv):
-                    q = vs[k]
+                    q = _tp(vs[k], _xfv)
                     pos.extend((q[0], q[1], q[2]))
                     nrm.extend(fn)
                 ids = list(range(base, base + nv))
             else:
-                ids = [vert(vs[k], fn) for k in range(nv)]
+                ids = [vert(_tp(vs[k], _xfv), fn) for k in range(nv)]
 
             if nv == 3:
                 fan = ((ids[0], ids[1], ids[2]),)
@@ -146,6 +316,11 @@ for b in bodies:
                 idx.extend((a, c, d))
                 tris += 1
             fid += 1
+    unify_winding(_idx_start)
+    if not FLAT:
+        recompute_normals(_idx_start)
+    if len(idx) > _idx_start:
+        groups.append([_idx_start // 3, len(idx) // 3])
 
 if not FLAT:
     for i in range(0, len(nrm), 3):
@@ -166,6 +341,6 @@ with open(OUT, 'w', encoding='utf-8') as fh:
          or getattr(part, 'FullPath', None) or 'part')
     _pn = _pn.replace(chr(92), '/').split('/')[-1]
     json.dump({'name': _pn, 'vertices': inter, 'indices': idx,
-               'tris': tris}, fh, separators=(',', ':'))
+               'tris': tris, 'groups': groups}, fh, separators=(',', ':'))
 
 w('%s|%d|%d' % (OUT, tris, len(pos) // 3))

@@ -25,6 +25,32 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
+/** Hosts that count as "this machine" for the same-origin check. */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+
+/**
+ * Reject a request that did not come from this machine's own pages.
+ *
+ * A non-loopback Host means a DNS-rebinding page is pretending to be us; an Origin naming
+ * another site means a cross-site request. No Origin at all is allowed: the preview iframe
+ * and curl send none, and refusing those would break normal use.
+ */
+function sameOrigin(req) {
+    const host = String(req.headers.host ?? '')
+    const hostname = host.replace(/:\d+$/, '').toLowerCase()
+    if (hostname && !LOOPBACK_HOSTS.has(hostname))
+        return false
+    const origin = req.headers.origin ?? req.headers.referer ?? ''
+    if (!origin)
+        return true
+    try {
+        return LOOPBACK_HOSTS.has(new URL(origin).hostname.toLowerCase())
+    }
+    catch {
+        return false
+    }
+}
+
 /** Bodies + volume: enough to tell "the model changed" without paying for facets. */
 const PROBE_PY = [
     'try:',
@@ -89,7 +115,9 @@ function parsePushOut(out) {
  */
 export function registerPreviewRoutes({ webServer, bridge }) {
     const state = {
-        tol: 0.05,
+        // 0 = reuse whatever NX already facet-ted (an assembly comes back as ~94k triangles,
+        // 26 MB). Forcing a tolerance re-facets every body and only makes the buffer bigger.
+        tol: 0,
         flat: false,
         seq: 0,
         key: null,
@@ -99,6 +127,7 @@ export function registerPreviewRoutes({ webServer, bridge }) {
         busy: false,
         lastProbeAt: 0,
         lastSig: '',
+        simplified: false,
     }
 
     const outFile = join(tmpdir(), 'dsh-nx-preview.json')
@@ -124,6 +153,16 @@ export function registerPreviewRoutes({ webServer, bridge }) {
         if (!info) throw new Error('preview push produced no output: ' + JSON.stringify(r?.out ?? []).slice(0, 200))
         const raw = await readFile(info.path, 'utf8')
         const mesh = JSON.parse(raw)
+        /* Only the first load and real model changes ship the buffer (a no-op poll answers
+           {seq, unchanged} in a few bytes), so 25 MB for a 14-part assembly is fine; anything
+           past ~48 MB is rebuilt once at a coarser tolerance instead. */
+        const dense = raw.length > 48 * 1024 * 1024 || (mesh.tris ?? 0) > 600000
+        if (dense && !state.simplified && Number(state.tol) < 0.5) {
+            state.simplified = true
+            state.tol = 0.5
+            state.key = null
+            return build(sig)
+        }
         state.mesh = mesh
         state.ms = Date.now() - t0
         state.seq += 1
@@ -188,20 +227,28 @@ export function registerPreviewRoutes({ webServer, bridge }) {
     async function onMesh(req, res) {
         /* 客户端报的 seq 等于本地 seq 时不能直接回 unchanged：seq 只在 build() 里递增，
            模型可能在两次轮询之间被改过。这里永远先跑一次探针（700 ms 节流保护 NX），
-           由 meshFor() 决定是否重建，再看 seq 有没有涨。 */
+           由 meshFor() 决定是否重建，再看 seq 有没有涨。
+
+           "unchanged" 只对**已经拿着当前 seq** 的客户端成立。新打开的预览页报 seq=-1，
+           原来也会收到 unchanged，于是页面永远停在「等待 NX…」。 */
         try {
+            const url = new URL(req.url ?? '/', 'http://localhost')
+            const clientSeq = Number(url.searchParams.get('seq') ?? '-1')
             const before = state.seq
             const mesh = await meshFor()
-            if (state.seq === before) {
+            const hasMesh = Boolean(mesh && Array.isArray(mesh.vertices) && mesh.vertices.length)
+            if (state.seq === before && clientSeq === state.seq && hasMesh) {
                 return sendJson(res, 200, { seq: state.seq, unchanged: true })
             }
             return sendJson(res, 200, {
                 seq: state.seq,
-                name: mesh.name ?? '',
-                vertices: mesh.vertices,
-                indices: mesh.indices,
+                name: mesh?.name ?? '',
+                vertices: mesh?.vertices ?? [],
+                indices: mesh?.indices ?? [],
+                // 每个 body 的三角形区间：封盖按实体分开算，跨零件连环会让截面拉花
+                groups: mesh?.groups ?? [],
                 ms: state.ms,
-                tris: mesh.tris ?? Math.floor((mesh.indices?.length ?? 0) / 3),
+                tris: mesh?.tris ?? Math.floor((mesh?.indices?.length ?? 0) / 3),
             })
         }
         catch (error) {
@@ -213,7 +260,7 @@ export function registerPreviewRoutes({ webServer, bridge }) {
     async function onQuality(req, res) {
         if ((req.method ?? 'GET').toUpperCase() === 'POST') {
             const body = await readBody(req)
-            if (body && typeof body.tol === 'number' && body.tol > 0) state.tol = body.tol
+            if (body && typeof body.tol === 'number' && body.tol >= 0) state.tol = body.tol
             if (body && typeof body.flat === 'boolean') state.flat = body.flat
         }
         sendJson(res, 200, { tol: state.tol, flat: state.flat, seq: state.seq, busy: state.busy })
@@ -221,6 +268,14 @@ export function registerPreviewRoutes({ webServer, bridge }) {
 
     function dispatch(req, res) {
         const path = new URL(req.url ?? '/', 'http://localhost').pathname
+        /* The private listener is loopback-only, but any page in the user's browser can
+           still reach 127.0.0.1:<port>. The GET routes only read a mesh (harmless), while
+           POST /quality writes state, so that one is held to the same origin check the
+           panel routes use. Requests without an Origin (the iframe document itself, curl)
+           are allowed - refusing them would break the page for no security gain. */
+        if (String(req.method ?? 'GET').toUpperCase() === 'POST' && !sameOrigin(req)) {
+            return sendJson(res, 403, { error: 'cross-origin request refused' })
+        }
         if (path === '/' || path === '/live3d' || path === '/live3d/' || path === '/dsh-nx/live3d' || path === '/dsh-nx/live3d/') return onPage(req, res)
         if (path.endsWith('/live3d/base')) return onBase(req, res)
         if (path.endsWith('/live3d/mesh')) return onMesh(req, res)

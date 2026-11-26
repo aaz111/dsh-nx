@@ -1,0 +1,21 @@
+# Python 字节码缓存：跨 Python 版本无效，白白占体积
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# 开发期产物
+*.log
+*.tmp
+node_modules/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本机脚本（不进发布包）
+dsh-nx/switch-to-local.ps1

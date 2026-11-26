@@ -230,6 +230,7 @@ export class NxBridge {
         child.unref();
 
         const deadline = Date.now() + this.startTimeoutMs;
+        let wait = 50;
         while (Date.now() < deadline) {
             const ready = this.readReady();
             if (ready !== undefined) {
@@ -238,7 +239,9 @@ export class NxBridge {
             }
             if (child.exitCode !== null && child.exitCode !== undefined)
                 break;
-            await sleep(ifDelay());
+            // NX needs ~25 s to come up; polling every 6 ms for that long is pure waste.
+            await sleep(wait);
+            wait = Math.min(500, Math.round(wait * 1.2));
         }
         const fatal = this.readTail(path.join(this.root, 'fatal.log'));
         throw new Error(`NX worker did not become ready within ${Math.round(this.startTimeoutMs / 1000)} s`
@@ -271,6 +274,7 @@ export class NxBridge {
         const respPath = path.join(this.respDir, `${id}.json`);
         fs.writeFileSync(reqPath, JSON.stringify({ id, cmd, args }), 'utf8');
         const deadline = Date.now() + timeoutMs;
+        let wait = 4;
         while (Date.now() < deadline) {
             if (fs.existsSync(respPath)) {
                 const text = fs.readFileSync(respPath, 'utf8');
@@ -284,7 +288,10 @@ export class NxBridge {
                 }
                 return resp.result;
             }
-            await sleep(ifDelay());
+            await sleep(wait);
+            // A modelling call takes tens of seconds: poll fast enough to feel instant for
+            // short commands, then back off so a 90 s export does not cost 15 000 stats.
+            wait = Math.min(120, Math.round(wait * 1.35));
         }
         fs.rmSync(reqPath, { force: true });
         // A hung command blocks the whole session: drop NX so the next call restarts.
@@ -295,15 +302,33 @@ export class NxBridge {
     /** Ask the worker to exit, then make sure the process is gone. */
     async stop(reason = 'requested') {
         const pid = this.pid ?? this.readReady()?.pid;
+        const marker = `${randomUUID().replaceAll('-', '').slice(0, 8)}`;
+        const respPath = path.join(this.respDir, `${marker}.json`);
         if (pid !== undefined) {
             try {
-                fs.writeFileSync(path.join(this.reqDir, `${randomUUID().slice(0, 8)}.json`),
-                    JSON.stringify({ id: randomUUID().slice(0, 8), cmd: 'quit', args: { reason } }), 'utf8');
+                fs.writeFileSync(path.join(this.reqDir, `${marker}.json`),
+                    JSON.stringify({ id: marker, cmd: 'quit', args: { reason } }), 'utf8');
             }
             catch { /* ignore */ }
         }
-        await sleep(300);
-        await killTree(pid);
+        /* The worker is in the middle of nothing most of the time, but a stop can land
+           while a 90 s export is running: give it a real grace period and watch the ready
+           file disappear, instead of killing the tree after a flat 300 ms and losing the
+           translator's output. */
+        const deadline = Date.now() + 5000;
+        while (pid !== undefined && Date.now() < deadline) {
+            if (respPath !== undefined && fs.existsSync(respPath))
+                break;
+            if (!isAlive(pid))
+                break;
+            await sleep(100);
+        }
+        if (pid !== undefined && isAlive(pid))
+            await killTree(pid);
+        try {
+            fs.rmSync(respPath, { force: true });
+        }
+        catch { /* ignore */ }
         this.child = undefined;
         this.pid = undefined;
         try {
@@ -328,10 +353,6 @@ export class NxBridge {
             ...(ready === undefined ? {} : { pid: ready.pid, release: ready.release, commands: ready.commands }),
         };
     }
-}
-
-function ifDelay() {
-    return 6;
 }
 
 function isAlive(pid) {

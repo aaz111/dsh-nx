@@ -57,7 +57,9 @@ and deletes reference sets.
 
 Things NX refuses in this batch session — do not fight them, design around them:
 - DXF/DWG export hangs the translator; other tools cover the formats.
-- Native drafting dimensions cannot be created (auto-annotation only picks up existing PMI).
+- nx_dimension DOES create real, associative native dimensions (UF_DRF path, 0.5.3+); it needs a
+  sheet with views first. nx_annotate is the one that only picks up existing PMI and yields nothing
+  on an imported solid. Sketch dimensions are a separate dead end, see below.
 - A drawing sheet created from a template prints its views but not the template frame and title
   block; say so instead of promising a framed sheet.
 - The assembly solver registers mates but does not move components: position with
@@ -81,6 +83,7 @@ Things NX refuses in this batch session — do not fight them, design around the
   for solids of revolution, instead of promising these.
 - Sketch dimensions cannot be created in this batch session (sketch.CreateDimension rejects every
   overload); size a sketch by its own geometry or drive the model with nx_expression afterwards.
-- Motion (NX Motion / .sim) is not exposed by this plugin.
+- Motion IS exposed: nx_motion_open / status / solve / frames / report drive NX Motion (.sim) and
+  render a trajectory PNG + GIF. It needs a solved motion part; it cannot build a motion model.
 - Anything else: nx_python runs NXOpen code in the session, with NXOpen, NX, s and part in scope.
 `;

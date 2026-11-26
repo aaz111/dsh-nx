@@ -57,12 +57,13 @@ html,body{margin:0;height:100%;background:#15171c;overflow:hidden;
 #clip input{width:min(160px, 34vw);accent-color:#1f6feb}
 </style>
 <canvas id="c"></canvas>
-<div id="bar"><span id="dot"></span><span id="title">等待 NX…</span><span id="stat"></span>
+<div id="bar"><span id="dot"></span><span id="title">正在生成网格…</span><span id="stat"></span>
 <select id="qual" title="预览精度（NX 侧重新面片化）">
+  <option value="0" selected>NX 缓存</option>
   <option value="0.5">草图 0.5mm</option>
   <option value="0.25">快速 0.25mm</option>
   <option value="0.12">标准 0.12mm</option>
-  <option value="0.05" selected>精细 0.05mm</option>
+  <option value="0.05">精细 0.05mm</option>
   <option value="0.02">精密 0.02mm</option>
   <option value="0.01">极精 0.01mm</option>
 </select>
@@ -205,216 +206,125 @@ function rotAxis(axis, a){
    剖切面位置的任何变化都要重算；56k 三角形大约 60~150 ms。 */
 var holeData = null, holeVBO = null, holeDirty = true;
 var meshVs = null, meshIx = null, capData = null, capVBO = null, capDirty = true, capMs = 0;
+var meshGroups = [];
 
 function buildCap(positions, indices, axis, v) {
-  const EPS = 1e-4;
-  const segs = [];
-  const P3 = (i) => [positions[i*6], positions[i*6+1], positions[i*6+2]];
+  /* 切面封盖：扫描线填充，不再连环。
 
+     旧做法要把交线连成闭环再耳切三角化；一个实体的环很容易跟旁边的轮廓串到一起
+     （薄壁处两个环共用顶点、孔口与外轮廓相切），于是拉出穿透整个模型的大三角形，孔也填错。
+
+     扫描线只看每一行与轮廓的交点数，奇偶规则自动算出实心区和孔，不需要任何拓扑推断，也不依赖绕序。
+     分辨率按切面尺寸自适应（最多 400 行）。 */
+  const u1 = (axis + 1) % 3, u2 = (axis + 2) % 3;
+  const P = (i) => [positions[i * 6], positions[i * 6 + 1], positions[i * 6 + 2]];
+  const segs = [];
   for (let t = 0; t < indices.length; t += 3) {
-    const A = P3(indices[t]), B = P3(indices[t+1]), C = P3(indices[t+2]);
-    const da = A[axis]-v, db = B[axis]-v, dc = C[axis]-v;
-    if ((da>EPS&&db>EPS&&dc>EPS) || (da<-EPS&&db<-EPS&&dc<-EPS)) continue;
-    if (Math.abs(da)<EPS && Math.abs(db)<EPS && Math.abs(dc)<EPS) continue; // 整个三角形躺在平面上
+    const A = P(indices[t]), B = P(indices[t + 1]), C = P(indices[t + 2]);
+    const da = A[axis] - v, db = B[axis] - v, dc = C[axis] - v;
+    if ((da > 0 && db > 0 && dc > 0) || (da < 0 && db < 0 && dc < 0)) continue;
     const pts = [];
-    const cut = (P, Q, dp, dq) => {
-      if ((dp>EPS&&dq>EPS) || (dp<-EPS&&dq<-EPS)) return;
-      if (Math.abs(dp-dq) < 1e-12) return;
-      const s = dp/(dp-dq);
-      pts.push([P[0]+(Q[0]-P[0])*s, P[1]+(Q[1]-P[1])*s, P[2]+(Q[2]-P[2])*s]);
+    const cut = (p, q, dp, dq) => {
+      if ((dp > 0 && dq > 0) || (dp < 0 && dq < 0)) return;
+      if (Math.abs(dp - dq) < 1e-12) return;
+      const f = dp / (dp - dq);
+      pts.push([p[u1] + (q[u1] - p[u1]) * f, p[u2] + (q[u2] - p[u2]) * f]);
     };
-    cut(A,B,da,db); cut(B,C,db,dc); cut(C,A,dc,da);
-    const up = [];                       // 顶点恰在平面上时会重复加点，先合并
-    for (const pp of pts) {
-      let dup = false;
-      for (const qq of up) {
-        if (Math.abs(pp[0]-qq[0]) < EPS && Math.abs(pp[1]-qq[1]) < EPS && Math.abs(pp[2]-qq[2]) < EPS) { dup = true; break; }
-      }
-      if (!dup) up.push(pp);
-    }
-    if (up.length === 2) {
-      const a = up[0], b = up[1];
-      const d = Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
-      if (d > EPS) segs.push([a, b]);
+    cut(A, B, da, db); cut(B, C, db, dc); cut(C, A, dc, da);
+    if (pts.length >= 2) {
+      const dx = pts[1][0] - pts[0][0], dy = pts[1][1] - pts[0][1];
+      if (dx * dx + dy * dy > 1e-12) segs.push([pts[0][0], pts[0][1], pts[1][0], pts[1][1]]);
     }
   }
   window.__segs = segs.length;
-  const holeOut = [];
   if (!segs.length) return { cap: [], holes: [] };
 
-  // 端点量化去重
-  const q = (p) => [Math.round(p[0]*1e3)/1e3, Math.round(p[1]*1e3)/1e3, Math.round(p[2]*1e3)/1e3];
-  const key = (p) => q(p).join(',');
-  const verts = new Map();      // key -> {p, id}
-  const byId = [];              // id -> info
-  const NBR = new Map();        // id -> Set(neighbour id)
-  const idOf = (p) => {
-    const k = key(p);
-    if (!verts.has(k)) {
-      const id = verts.size;
-      const info = { p: q(p), id, used: false };
-      verts.set(k, info);
-      byId[id] = info;
-      NBR.set(id, new Set());
-    }
-    return verts.get(k).id;
-  };
-  for (const [a, b] of segs) {
-    const ia = idOf(a), ib = idOf(b);
-    if (ia === ib) continue;
-    NBR.get(ia).add(ib);
-    NBR.get(ib).add(ia);
+  let lo2 = Infinity, hi2 = -Infinity;
+  for (let i = 0; i < segs.length; i++) {
+    const a = segs[i][1], b = segs[i][3];
+    if (a < lo2) lo2 = a;
+    if (a > hi2) hi2 = a;
+    if (b < lo2) lo2 = b;
+    if (b > hi2) hi2 = b;
   }
+  const span = (hi2 - lo2) || 1;
+  const step = Math.max(0.15, span / 400);
 
-  // 连成环：从每个未用过的顶点出发，沿邻居走回起点
-  const pt = (id) => byId[id].p;
-  const dist = (i, j) => {
-    const a = pt(i), b = pt(j);
-    return Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]);
+  const cap = [];
+  const put = (x, y) => {
+    const p = [0, 0, 0];
+    p[axis] = v; p[u1] = x; p[u2] = y;
+    cap.push(p[0], p[1], p[2]);
   };
-  const u = (axis+1)%3, w = (axis+2)%3;   // 提前：环连接要按 2D 转角走
-  const p2 = (id) => { const p = byId[id].p; return [p[u], p[w]]; };
-  const angOf = (from, to) => {
-    const a = p2(from), b = p2(to);
-    return Math.atan2(b[1]-a[1], b[0]-a[0]);
-  };
-  // 平面图面遍历：每条有向边只用一次；在对端点取"转角最小"的邻边，贴着面走
-  const loops = [];
-  const usedEdge = new Set();
-  const ek = (a, b) => (a < b ? a + ',' + b : b + ',' + a);
-  for (const [, info0] of verts) {
-    const id = info0.id;
-    if (byId[id].used) continue;
-    const loop = [id];
-    byId[id].used = true;
-    let prev = -1, cur = id, guard = 0;
-    while (guard++ < 20000) {
-      const nbrs = [...(NBR.get(cur) || [])].filter(n => n !== prev && (!byId[n].used || n === id));
-      if (!nbrs.length) break;
-      let nxt = nbrs[0];
-      if (prev >= 0 && nbrs.length > 1) {       // 按 2D 转角选，不按距离
-        const dirIn = angOf(prev, cur);
-        let bestD = -Infinity;
-        for (const n of nbrs) {
-          let d = angOf(cur, n) - dirIn;
-          while (d >= -1e-9) d -= Math.PI * 2;   // (-2pi, 0]，取最大 = 顺时针最紧
-          if (d > bestD) { bestD = d; nxt = n; }
-        }
+  const xs = [];
+  for (let y = lo2; y < hi2; y += step) {
+    xs.length = 0;
+    for (let i = 0; i < segs.length; i++) {
+      const s2 = segs[i];
+      const ay = s2[1], by = s2[3];
+      if ((ay <= y && by > y) || (by <= y && ay > y)) {
+        const f = (y - ay) / (by - ay);
+        xs.push(s2[0] + (s2[2] - s2[0]) * f);
       }
-      if (nxt === id) break;
-      if (usedEdge.has(ek(cur, nxt))) break;
-      usedEdge.add(ek(cur, nxt));
-      loop.push(nxt);
-      byId[nxt].used = true;
-      prev = cur; cur = nxt;
     }
-    if (loop.length >= 3) loops.push(loop);
+    if (xs.length < 2) continue;
+    xs.sort((a, b) => a - b);
+    /* 相邻线段在共用顶点处会给出同一个 x：不合并的话配对整体错位，孔就被填实。 */
+    let n = 0;
+    for (let i = 0; i < xs.length; i++) {
+      // 容差放宽到 0.01 mm：网格三角在共用顶点处的浮点误差比 1e-4 大，
+      // 合并不净就会让配对整体错位，孔于是被填实。
+      if (n === 0 || xs[i] - xs[n - 1] > 1e-2) xs[n++] = xs[i];
+    }
+    xs.length = n;
+    if (n < 2 || (n & 1)) continue;      // 奇数个交点是自交/退化，这一行宁可不填
+    const yTop = Math.min(y + step, hi2);
+    for (let i = 0; i + 1 < n; i += 2) {
+      const x0 = xs[i], x1 = xs[i + 1];
+      if (x1 - x0 < 1e-6) continue;
+      put(x0, y); put(x1, y); put(x1, yTop);
+      put(x0, y); put(x1, yTop); put(x0, yTop);
+    }
   }
-
-  window.__loops = loops.length;
-  window.__ringTxt = loops.map(l => l.length).sort((a,b) => b-a).slice(0,8).join('/');
-  const out = [];
-  const rings = loops.map(loop => {
-    const poly = loop.map(id => { const p = pt(id); return [p[u], p[w]]; });
-    let area = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i], b = poly[(i+1)%poly.length];
-      area += a[0]*b[1] - b[0]*a[1];
-    }
-    return { loop, poly, area };
-  });
-  const maxA = rings.reduce((m, r) => Math.max(m, Math.abs(r.area)), 0);
-  const insidePoint = (poly) => {          // 环内一个必然在内部（不落在边上）的点
-    const n = poly.length;
-    for (let i = 0; i < n; i++) {
-      const a = poly[i], b = poly[(i+1) % n], c = poly[(i+2) % n];
-      const m = [(a[0]+b[0]+c[0]) / 3, (a[1]+b[1]+c[1]) / 3];
-      if (inPoly(m, poly)) return m;
-    }
-    return poly[0];
-  };
-  const inPoly = (p, poly) => {
-    let c = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const a = poly[i], b = poly[j];
-      if (((a[1] > p[1]) !== (b[1] > p[1])) &&
-          (p[0] < (b[0]-a[0]) * (p[1]-a[1]) / (b[1]-a[1]) + a[0])) c = !c;
-    }
-    return c;
-  };
-  for (const ring of rings) {
-    let hole = false;
-    for (const other of rings) {
-      if (other === ring || other.poly.length < 3) continue;
-      if (inPoly(insidePoint(ring.poly), other.poly)) { hole = true; break; }
-    }
-    if (hole && maxA > 0 && Math.abs(ring.area) < maxA * 0.4) {
-      const hp = ring.poly;
-      for (let i = 1; i + 1 < hp.length; i++) {
-        const p0 = pt(ring.loop[0]), p1 = pt(ring.loop[i]), p2 = pt(ring.loop[i+1]);
-        holeOut.push(p0[0],p0[1],p0[2], p1[0],p1[1],p1[2], p2[0],p2[1],p2[2]);
-      }
-      continue;
-    }                       // 孔：不封，保持透空
-    const loop = ring.loop, poly = ring.poly;
-    let area = ring.area;
-    const holes = rings.filter(r => r !== ring && r.poly.length >= 3 && maxA > 0 && Math.abs(r.area) < maxA * 0.4
-                       && inPoly(insidePoint(r.poly), poly)).map(r => r.poly);
-  if (area < 0) { poly.reverse(); loop.reverse(); }
-    // 耳切
-    const idx = poly.map((_, i) => i);
-    let guard = 0;
-    const cross = (a,b,c) => (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]);
-    const inTri = (p,a,b,c) => {
-      const d1 = cross(a,b,p), d2 = cross(b,c,p), d3 = cross(c,a,p);
-      return (d1>=0 && d2>=0 && d3>=0) || (d1<=0 && d2<=0 && d3<=0);
-    };
-    const emit = (i, j, k) => {
-      const A = pt(loop[i]), B = pt(loop[j]), C = pt(loop[k]);
-      out.push(A[0],A[1],A[2], B[0],B[1],B[2], C[0],C[1],C[2]);
-    };
-    while (idx.length > 3 && guard++ < 10000) {
-      let found = false;
-      for (let i = 0; i < idx.length; i++) {
-        const i0 = idx[(i+idx.length-1)%idx.length], i1 = idx[i], i2 = idx[(i+1)%idx.length];
-        const a = poly[i0], b = poly[i1], c = poly[i2];
-        if (cross(a,b,c) <= 1e-9) continue;
-        if (holes.length) {                       // 别跨孔连
-          const mx = (a[0]+b[0]+c[0])/3, my = (a[1]+b[1]+c[1])/3;
-          let bad = false;
-          for (const h of holes) if (inPoly([mx,my], h)) { bad = true; break; }
-          if (bad) continue;
-        }          // 凹角
-        let ok = true;
-        for (const j of idx) {
-          if (j===i0||j===i1||j===i2) continue;
-          if (inTri(poly[j], a, b, c)) { ok = false; break; }
-        }
-        if (!ok) continue;
-        emit(i0, i1, i2);
-        idx.splice(i, 1);
-        found = true;
-        break;
-      }
-      if (!found) break;
-    }
-    if (idx.length === 3) emit(idx[0], idx[1], idx[2]);
-  }
-  return { cap: out, holes: holeOut };
+  window.__capTris = cap.length / 9;
+  return { cap, holes: [] };
 }
 
 function rebuildCap(){
-  if (st.clipAxis < 0 || !meshVs || !meshIx || !bbox){ capData = null; return; }
+  if (st.clipAxis < 0 || !meshVs || !meshIx || !bbox){ capData = null; holeData = null; return; }
   var ax = st.clipAxis;
   var lo = bbox.mn[ax], hi = bbox.mx[ax];
   var v = lo + (hi - lo) * st.clipVal;
   var t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  const res = buildCap(meshVs, meshIx, ax, v);
-  capData = res.cap; holeData = res.holes; holeDirty = true;
+  /* 按 body 分组各自封盖。14 个零件混在一次里，交点会被连到别的零件的环上，
+     扇形三角化于是拉出穿透整个模型的白三角；分组后每个实体只跟自己闭合。 */
+  var groups = (meshGroups && meshGroups.length) ? meshGroups : [[0, meshIx.length / 3]];
+  var cap = [], holes = [];
+  var totalSegs = 0, groupsWithCap = 0;
+  for (var g = 0; g < groups.length; g++) {
+    var gs = groups[g][0], ge = groups[g][1];
+    if (!(ge > gs)) continue;
+    var sub = meshIx.subarray
+      ? meshIx.subarray(gs * 3, ge * 3)
+      : Array.prototype.slice.call(meshIx, gs * 3, ge * 3);
+    var res;
+    try { res = buildCap(meshVs, sub, ax, v); } catch (e) { continue; }
+    totalSegs += (window.__segs || 0);
+    if (res && res.cap && res.cap.length) {
+      groupsWithCap += 1;
+      for (var i = 0; i < res.cap.length; i++) cap.push(res.cap[i]);
+    }
+    if (res && res.holes && res.holes.length) {
+      for (var j = 0; j < res.holes.length; j++) holes.push(res.holes[j]);
+    }
+  }
+  capData = cap;
+  holeData = holes;
+  holeDirty = true;
   var t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   capMs = t1 - t0;
   if (typeof elStat !== 'undefined' && elStat) {
-    elStat.textContent = 'NX · 封口 ' + (capData.length / 9) + ' 面 · ' + capMs.toFixed(0) + ' ms';
+    elStat.textContent = 'NX · 交线 ' + totalSegs + ' · ' + groupsWithCap + '/' + groups.length + ' 体 · 封盖 ' + (capData.length / 9) + ' 片 · ' + capMs.toFixed(0) + ' ms';
   }
 }
 
@@ -429,6 +339,7 @@ function upload(m){
   nIdx = ix.length;
   meshVs = vs instanceof Float32Array ? vs : new Float32Array(vs);
   meshIx = ix instanceof Uint32Array ? ix : new Uint32Array(ix);
+  meshGroups = m.groups || [];
   capDirty = true;
 
   // 边索引：每个三角形三条边，线框和轮廓线都用它

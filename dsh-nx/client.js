@@ -1062,9 +1062,9 @@ window.__ModuleLoader__.load({
                         title: '在侧边栏打开实时预览（需先运行 nxstream\\live.py）',
                         onClick: () => {
                             const open = (url, note) => {
-                                // 同样落在面板内的预览卡片里，不切整页 —— 整页 iframe 一旦加载
-                                // 失败就是一张白纸，返回按钮也跟着没了。
                                 setPreview({ live: true, name: '实时预览', url: url || '', note: note || null });
+                                // 有地址就直接整页打开；取不到地址时留在面板里显示 note。
+                                if (url) setPageView(true);
                             };
                             if (!openLivePreviewRef) { open('', 'openLivePreviewRef 未初始化：client.js 不是新版或 apply() 没跑到'); return; }
                             openLivePreviewRef().then((url) => {
