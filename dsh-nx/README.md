@@ -70,11 +70,11 @@
 ### 2.1 安装
 
 ```bash
-# 方式一：从 Release 下载 zip 解压后安装
-pnpm add file:<解压目录>/dsh-nx
-
-# 方式二：npm（包名带 scope）
+# 方式一：npm（推荐）
 pnpm add @aaz111/dsh-nx
+
+# 方式二：从 Release 下载 zip 解压后安装
+pnpm add file:<解压目录>/dsh-nx
 ```
 
 > **包名说明**：本插件的 npm 包名是 `@aaz111/dsh-nx`，不是 `dsh-nx` ——

@@ -4,6 +4,8 @@
 
 **当前版本：1.0.10** · npm 包名 `@aaz111/dsh-nx`
 
+[![npm](https://img.shields.io/npm/v/@aaz111/dsh-nx.svg)](https://www.npmjs.com/package/@aaz111/dsh-nx)
+
 在后台 NX 会话中完成三维建模、工程图纸、格式导出、装配管理与有限元分析，全部通过工具调用或侧栏面板驱动，无需手动操作 NX 图形界面。
 甚至可以用许愿式的要求建模，但是ai生成不保证完全准确，生成结果需人工复核。
 
@@ -82,11 +84,11 @@
 ### 2.1 安装
 
 ```bash
-# 方式一：从 Release 下载 zip 解压后安装
-pnpm add file:<解压目录>/dsh-nx
-
-# 方式二：npm（包名带 scope）
+# 方式一：npm（推荐）
 pnpm add @aaz111/dsh-nx
+
+# 方式二：从 Release 下载 zip 解压后安装
+pnpm add file:<解压目录>/dsh-nx
 ```
 
 > **包名说明**：本插件的 npm 包名是 `@aaz111/dsh-nx`，不是 `dsh-nx` ——
