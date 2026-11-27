@@ -182,6 +182,7 @@ nx_fea_solid（mesh=draped, loads=pressure+force）→ 查看云图
 ### 2.6 尺寸标注 `nx_dimension`
 
 在已有图纸上打**原生**尺寸：读数是 NX 真实测量值，改模型后跟着变。
+如果只需要制图功能可前往https://github.com/aaz111/nx-draft
 
 ```
 nx_dimension                                  # 默认标 Top + Front
